@@ -237,6 +237,15 @@ def online_userids():
 
 # ---------------------------------------------------------------- dados
 
+def em_jogo():
+    """{roleid: (userid, nome)} dos personagens em jogo agora (gdeliveryd). O authd so sabe a conta;
+    isto diz qual personagem dela esta logado. None se o gdeliveryd nao responder."""
+    try:
+        return p.online_roles(DELIVERY)
+    except Exception:  # noqa: BLE001 - cai para o status por conta
+        return None
+
+
 def gm_userids():
     return {r["userid"] for r in db_query("SELECT DISTINCT userid FROM auth")}
 
@@ -283,7 +292,7 @@ def buscar(q):
     q = q.strip().lstrip("#").strip()
     if not q:
         return []
-    online, gms = online_userids(), gm_userids()
+    online, gms, jogo = online_userids(), gm_userids(), em_jogo()
     grupos = [[] for _ in range(5)]  # ID exato, nome exato, nome comeca, nome contem, conta
 
     if q.isdigit():
@@ -320,21 +329,24 @@ def buscar(q):
             continue
         vistos.add(rid)
         out.append({"id": rid, "name": nome, "userid": uid, "account": nome_conta(uid),
-                    "online": uid in online, "gm": uid in gms})
+                    "online": rid in jogo if jogo is not None else uid in online, "gm": uid in gms})
         if len(out) >= BUSCA_MAX:
             break
     return out
 
 
 def lista_online():
-    """Contas online agora e os personagens delas (o authd nao diz qual personagem esta em jogo)."""
-    online, gms = online_userids(), gm_userids()
+    """Personagens em jogo agora. Sem o gdeliveryd, cai para as contas online e todos os personagens delas."""
+    gms, jogo = gm_userids(), em_jogo()
+    if jogo is not None:
+        return sorted(({"id": rid, "name": nome, "userid": uid, "account": nome_conta(uid), "online": True,
+                        "gm": uid in gms} for rid, (uid, nome) in jogo.items()), key=lambda x: x["name"].lower())
     out = []
-    for uid in sorted(online):
+    for uid in sorted(online_userids()):
         with _indice_lock:
             c = _indice.get(uid)
-        roles = c["roles"] if c else _reler_conta(uid, nome_conta(uid))
         conta = c["name"] if c else nome_conta(uid)
+        roles = c["roles"] if c else _reler_conta(uid, conta)
         out += [{"id": rid, "name": nome, "userid": uid, "account": conta, "online": True, "gm": uid in gms}
                 for rid, nome in roles]
     return out
@@ -381,7 +393,8 @@ def role_json(role):
         "material": {"capacity": sh["size2"], "items": inv_json(sh["material"])},
         "generalcard": {"capacity": sh["size3"], "items": inv_json(sh["generalcard"])},
         "task_items": inv_json(role["task"]["task_inventory"]),
-        "online": b["userid"] in online_userids(),
+        "online": b["userid"] in online_userids(),  # conta logada: bloqueia gravacao
+        "em_jogo": b["id"] in (em_jogo() or {}),
     }
 
 
@@ -763,7 +776,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 role, raw = p.get_role(GAMEDB, int(parts[2]))
                 uid = role["base"]["userid"]
                 return self._send(200, {"v": hashlib.sha1(raw).hexdigest()[:16],
-                                        "online": uid in online_userids()})
+                                        "online": uid in online_userids(),
+                                        "em_jogo": role["base"]["id"] in (em_jogo() or {})})
             if len(parts) == 3 and parts[:2] == ["api", "role"]:
                 role, raw = p.get_role(GAMEDB, int(parts[2]))
                 return self._send(200, role_json(role) | {"backups": list_backups(int(parts[2])),

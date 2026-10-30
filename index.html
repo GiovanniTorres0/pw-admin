@@ -323,7 +323,7 @@ const marca = (txt, q) => {
   return i < 0 ? t : esc(txt.slice(0, i)) + `<mark>${esc(txt.slice(i, i + q.length))}</mark>` + esc(txt.slice(i + q.length));
 };
 const roleBtn = (r, q) => `<button class="role ${r.id === selected ? "sel" : ""}" data-id="${r.id}">
-  <span class="rn">${r.online ? '<i class="dot" title="conta online"></i>' : ""}<span>${marca(r.name, q)}</span>
+  <span class="rn">${r.online ? '<i class="dot" title="em jogo"></i>' : ""}<span>${marca(r.name, q)}</span>
     <small>${marca(r.account || "#" + r.userid, q)}${r.gm ? " · GM" : ""}</small></span><span class="muted">#${r.id}</span></button>`;
 const secao = (titulo, itens, q, vazio) => !itens.length && !vazio ? "" :
   `<div class="lsec"><div class="lt">${titulo}</div>${itens.length ? itens.map((r) => roleBtn(r, q)).join("") : `<p class="muted">${vazio}</p>`}</div>`;
@@ -334,9 +334,9 @@ function mostrarLista(html) {
 }
 function renderLateral() {
   if ($("accSearch").value.trim()) return;
-  const on = new Set(ONLINE.map((r) => r.userid));
+  const on = new Set(ONLINE.map((r) => r.id));
   mostrarLista(secao(`Online agora · ${ONLINE.length}`, ONLINE, "", "Ninguém online.")
-    + secao("Recentes", RECENTES.map((r) => ({ ...r, online: on.has(r.userid) })), "", ""));
+    + secao("Recentes", RECENTES.map((r) => ({ ...r, online: on.has(r.id) })), "", ""));
 }
 async function loadAccounts() {
   ONLINE = await api("/api/online");
@@ -385,7 +385,7 @@ setInterval(async () => {
   const id = selected;
   try {
     const v = await api(`/api/role/${id}/versao`);
-    if (id === selected && VERSAO && (v.v !== VERSAO.v || v.online !== VERSAO.online) && !ocupado()) loadRole(id, true);
+    if (id === selected && VERSAO && (v.v !== VERSAO.v || v.online !== VERSAO.online || v.em_jogo !== VERSAO.em_jogo) && !ocupado()) loadRole(id, true);
   } catch { /* tenta de novo */ }
 }, 10000);
 
@@ -448,7 +448,7 @@ async function loadRole(id, silencioso = false) {
   }
   if (id !== selected) return;
   TIPS = []; tip.hidden = true;
-  VERSAO = { v: r.versao, online: r.online };
+  VERSAO = { v: r.versao, online: r.online, em_jogo: r.em_jogo };
   if (!silencioso) lembrar(r);
   const val = (k) => { const [s, f] = k.split("."); return s === "attr" ? r.atributos[f] : r[s][f]; };
   const input = ([k, label]) => `<label>${label}<input data-k="${k}" data-v="${val(k)}" value="${val(k)}"></label>`;
@@ -457,7 +457,7 @@ async function loadRole(id, silencioso = false) {
       <div class="rtop">
         <h2>${esc(r.name)}</h2>
         <span class="tag">Nv ${r.status.level}</span><span class="muted">${r.cls_name} · conta ${esc(r.account || "#" + r.userid)}</span>
-        ${r.online ? '<span class="tag on">online · só leitura</span>' : ""}
+        ${r.em_jogo ? '<span class="tag on">em jogo · só leitura</span>' : r.online ? '<span class="tag" title="Outro personagem da conta está logado ou na seleção">conta logada · só leitura</span>' : ""}
         <div class="acts"><span id="pend" class="muted"></span>
           <button class="ibtn" id="roleReload" title="Recarregar (atualiza sozinho a cada 10 s)">↻</button>
           <button class="btn sec" id="cashBtn" title="Dar cash para a conta ${esc(r.account || "#" + r.userid)}">Cash</button>

@@ -390,6 +390,25 @@ def send_mail(dl, roleid, title, text, money=0, item_id=0, count=0, max_count=0,
     return struct.unpack_from(">H", res)[0]
 
 
+def online_roles(dl):
+    """Personagens em jogo agora: {roleid: (userid, nome)}. GMListOnlineUser (352) do gdeliveryd,
+    paginado pelo handler (-1 = fim)."""
+    out, handler = {}, -1
+    for _ in range(1000):
+        body = dl.send(352, struct.pack(">iIi", -1, 0, handler) + cuint_bytes(0), wait_type=353)
+        r = Reader(body)
+        retcode, _gm, _sid, handler = r._take(">i"), r._take(">i"), r._take(">I"), r._take(">i")
+        if retcode != 0:
+            break
+        for _ in range(r.cuint()):
+            userid, roleid = r._take(">i"), r._take(">i")
+            r._take(">i"); r._take(">I"); r._take(">i"); r._take(">b")  # linkid, localsid, gsid, status
+            out[roleid] = (userid, r.octets().decode("utf-16-le", "replace"))
+        if handler == -1:
+            break
+    return out
+
+
 def add_cash(db, userid, cash):
     """DebugAddCash (521) ao gamedbd; cash em centesimos (100 = 1 no jogo). Devolve o retcode do
     AddCash_Re (516)."""
