@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import http.server
 import json
+import re
 import os
 import secrets
 import struct
@@ -189,8 +190,9 @@ def list_items(query):
             "items": [{"id": i, "pilha": ITENS[str(i)].get("pilha", 0)} | item_info(i) for i in trecho]}
 
 
-SESSIONS = {}
+SESSIONS = {}  # token -> (expira, nome do admin)
 SESSION_TTL = 12 * 3600
+CTX = threading.local()  # admin e IP da requisicao atual, para a auditoria
 write_lock = threading.Lock()
 
 
@@ -209,16 +211,176 @@ def load_config():
 
 CFG = load_config()
 os.makedirs(CFG["backup_dir"], exist_ok=True)
+BACKUP_DIAS = 30  # backups mais velhos que isso sao apagados (o mais recente de cada personagem fica)
+_NOME_BACKUP = re.compile(r"^(\d+)_(\d{8})_(\d{6})(?:_\d+)?\.bin$")
+
+
+def pasta_backup(roleid):
+    """Uma pasta por personagem: abrir um personagem nao varre os backups de todos."""
+    return os.path.join(CFG["backup_dir"], str(int(roleid)))
+
+
+def arquivo_backup(roleid, nome):
+    return os.path.join(pasta_backup(roleid), nome)
+
+
+def novo_backup(roleid, raw):
+    """Grava os bytes do personagem num backup novo e devolve o nome do arquivo."""
+    os.makedirs(pasta_backup(roleid), exist_ok=True)
+    base = f"{roleid}_{time.strftime('%Y%m%d_%H%M%S')}"
+    nome, n = f"{base}.bin", 1
+    while os.path.exists(arquivo_backup(roleid, nome)):
+        n += 1
+        nome = f"{base}_{n}.bin"
+    with open(arquivo_backup(roleid, nome), "wb") as f:
+        f.write(raw)
+    return nome
+
+
+def _migrar_backups():
+    """Backups antigos ficavam todos na raiz: move cada um para a pasta do personagem."""
+    for nome in os.listdir(CFG["backup_dir"]):
+        m = _NOME_BACKUP.match(nome)
+        if m and os.path.isfile(os.path.join(CFG["backup_dir"], nome)):
+            os.makedirs(pasta_backup(m.group(1)), exist_ok=True)
+            os.replace(os.path.join(CFG["backup_dir"], nome), arquivo_backup(m.group(1), nome))
+
+
+def _limpar_backups():
+    limite = time.strftime("%Y%m%d", time.localtime(time.time() - BACKUP_DIAS * 86400))
+    apagados = 0
+    for rid in os.listdir(CFG["backup_dir"]):
+        if not rid.isdigit():
+            continue
+        nomes = sorted((n for n in os.listdir(pasta_backup(rid)) if _NOME_BACKUP.match(n)), reverse=True)
+        for nome in nomes[1:]:
+            if _NOME_BACKUP.match(nome).group(2) < limite:
+                os.remove(arquivo_backup(rid, nome))
+                apagados += 1
+    return apagados
+
+
+_migrar_backups()
 GAMEDB = p.RpcClient(*CFG["gamedbd"])
 DELIVERY = p.ProtoClient(*CFG["gdeliveryd"])
 GAMEDB_PROTO = p.ProtoClient(*CFG["gamedbd"])
 
 
 def audit(action, **info):
-    line = json.dumps({"t": time.strftime("%Y-%m-%d %H:%M:%S"), "action": action, **info},
-                      ensure_ascii=False)
-    with open(CFG["audit_log"], "a", encoding="utf-8") as f:
-        f.write(line + "\n")
+    """Registra a acao na tabela pwadmin_auditoria, com o admin e o IP da requisicao. Se o banco
+    falhar, vai para o audit.log, para nenhuma acao ficar sem registro."""
+    admin = info.pop("admin", None) or getattr(CTX, "admin", "") or "sistema"
+    ip = info.pop("ip", None) or getattr(CTX, "ip", "")
+    backup = info.get("backup") or info.get("safety_backup")
+    backup = os.path.basename(backup) if backup else None
+    dados = json.dumps(info, ensure_ascii=False, default=str)
+    try:
+        db_exec("INSERT INTO pwadmin_auditoria (quando, admin, ip, acao, roleid, userid, backup, dados) "
+                "VALUES (NOW(), %s, %s, %s, %s, %s, %s, %s)",
+                (admin, ip, action, info.get("roleid"), info.get("userid"), backup, dados))
+    except Exception as e:  # noqa: BLE001 - nunca perder o registro
+        line = json.dumps({"t": time.strftime("%Y-%m-%d %H:%M:%S"), "admin": admin, "ip": ip, "action": action,
+                           **info, "erro_banco": str(e)}, ensure_ascii=False, default=str)
+        with open(CFG["audit_log"], "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+
+def db_exec(sql, args=()):
+    """Tabelas do painel (utf8mb4; as do authd usam latin1)."""
+    conn = pymysql.connect(**CFG["db"], charset="utf8mb4", cursorclass=pymysql.cursors.DictCursor,
+                           autocommit=True)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, args)
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+TABELAS = [
+    """CREATE TABLE IF NOT EXISTS pwadmin_admins (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        nome VARCHAR(32) NOT NULL UNIQUE,
+        senha VARCHAR(200) NOT NULL,
+        ativo TINYINT NOT NULL DEFAULT 1,
+        criado DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        ultimo_login DATETIME NULL
+    ) DEFAULT CHARSET=utf8mb4""",
+    """CREATE TABLE IF NOT EXISTS pwadmin_auditoria (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        quando DATETIME NOT NULL,
+        admin VARCHAR(32) NOT NULL,
+        ip VARCHAR(45) NOT NULL DEFAULT '',
+        acao VARCHAR(32) NOT NULL,
+        roleid INT NULL,
+        userid INT NULL,
+        backup VARCHAR(80) NULL,
+        dados TEXT NOT NULL,
+        KEY k_role (roleid, id),
+        KEY k_backup (backup),
+        KEY k_quando (quando),
+        KEY k_admin (admin, id)
+    ) DEFAULT CHARSET=utf8mb4""",
+]
+
+
+def preparar_banco():
+    for sql in TABELAS:
+        db_exec(sql)
+    # Primeiro uso: a senha antiga do config.json vira o admin "admin"
+    if not db_exec("SELECT id FROM pwadmin_admins LIMIT 1") and CFG.get("password_sha256"):
+        db_exec("INSERT INTO pwadmin_admins (nome, senha) VALUES ('admin', %s)", ("sha256$" + CFG["password_sha256"],))
+    # audit.log antigo entra na tabela uma vez
+    if os.path.exists(CFG["audit_log"]):
+        with open(CFG["audit_log"], encoding="utf-8") as f:
+            linhas = [json.loads(x) for x in f if x.strip()]
+        for e in linhas:
+            acao, quando = e.pop("action", "?"), e.pop("t", None)
+            admin, ip = e.pop("admin", "antigo"), e.pop("ip", "")
+            backup = e.get("backup") or e.get("safety_backup")
+            db_exec("INSERT INTO pwadmin_auditoria (quando, admin, ip, acao, roleid, userid, backup, dados) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    (quando, admin, ip, acao, e.get("roleid"), e.get("userid"),
+                     os.path.basename(backup) if backup else None, json.dumps(e, ensure_ascii=False)))
+        os.replace(CFG["audit_log"], CFG["audit_log"] + f".importado_{time.strftime('%Y%m%d_%H%M%S')}")
+
+
+# Senhas: PBKDF2-SHA256 com sal. "sha256$..." e o formato antigo do config.json, trocado no 1o login.
+PBKDF2_ITER = 200_000
+
+
+def hash_senha(senha):
+    sal = secrets.token_bytes(16)
+    h = hashlib.pbkdf2_hmac("sha256", senha.encode(), sal, PBKDF2_ITER)
+    return f"pbkdf2${PBKDF2_ITER}${sal.hex()}${h.hex()}"
+
+
+def confere_senha(senha, guardado):
+    if guardado.startswith("sha256$"):
+        return hmac.compare_digest(hashlib.sha256(senha.encode()).hexdigest(), guardado[7:])
+    _, it, sal, h = guardado.split("$")
+    calc = hashlib.pbkdf2_hmac("sha256", senha.encode(), bytes.fromhex(sal), int(it))
+    return hmac.compare_digest(calc.hex(), h)
+
+
+def login_admin(nome, senha):
+    rows = db_exec("SELECT id, senha FROM pwadmin_admins WHERE nome=%s AND ativo=1", (nome,))
+    if not rows or not confere_senha(senha, rows[0]["senha"]):
+        return False
+    novo = hash_senha(senha) if rows[0]["senha"].startswith("sha256$") else rows[0]["senha"]
+    db_exec("UPDATE pwadmin_admins SET ultimo_login=NOW(), senha=%s WHERE id=%s", (novo, rows[0]["id"]))
+    return True
+
+
+_ativos = {}  # nome -> (ativo, conferido_em): admin desativado perde a sessao em ate 60 s
+
+
+def admin_ativo(nome):
+    ativo, quando = _ativos.get(nome, (False, 0))
+    if time.time() - quando > 60:
+        ativo = bool(db_exec("SELECT id FROM pwadmin_admins WHERE nome=%s AND ativo=1", (nome,)))
+        _ativos[nome] = (ativo, time.time())
+    return ativo
 
 
 def db_query(sql, args=()):
@@ -250,11 +412,14 @@ def gm_userids():
     return {r["userid"] for r in db_query("SELECT DISTINCT userid FROM auth")}
 
 
-# Indice de personagens em memoria (conta -> personagens), montado em segundo plano. Com milhares
-# de contas, listar tudo a cada pedido nao escala: a busca usa o indice e o SQL; contas achadas
-# pelo nome ou ID sao relidas na hora, entao personagens novos aparecem sem esperar o indice.
-INDICE_INTERVALO = 300  # segundos
+# Indice de personagens em memoria (conta -> personagens). Montagem completa ao iniciar e a cada
+# INDICE_COMPLETO; no meio, a cada minuto relê so contas novas e contas que entraram ou sairam
+# (criar, apagar e renomear personagem acontece com a conta logada). A busca por conta ou ID
+# tambem relê a conta na hora.
+INDICE_COMPLETO = 6 * 3600
+INDICE_TICK = 60
 BUSCA_MAX = 30
+ONLINE_MAX = 50
 _indice = {}  # userid -> {"name": conta, "roles": [(roleid, nome)]}
 _indice_lock = threading.Lock()
 
@@ -267,16 +432,36 @@ def _reler_conta(userid, nome):
 
 
 def _manter_indice():
+    completo_em, maior_id, antes = 0, 0, set()
+    ultima_limpeza = 0
     while True:
         try:
-            novo = {u["id"]: {"name": u["name"], "roles": p.get_user_roles(GAMEDB, u["id"])}
-                    for u in db_query("SELECT id, name FROM users")}
-            with _indice_lock:
-                _indice.clear()
-                _indice.update(novo)
+            if time.time() - completo_em > INDICE_COMPLETO:
+                novo = {}
+                for i, u in enumerate(db_query("SELECT id, name FROM users")):
+                    novo[u["id"]] = {"name": u["name"], "roles": p.get_user_roles(GAMEDB, u["id"])}
+                    if i % 200 == 199:
+                        time.sleep(0.2)  # nao sobrecarregar o gamedbd
+                with _indice_lock:
+                    _indice.clear()
+                    _indice.update(novo)
+                maior_id, completo_em = max(novo, default=0), time.time()
+            else:
+                for u in db_query("SELECT id, name FROM users WHERE id > %s", (maior_id,)):
+                    _reler_conta(u["id"], u["name"])
+                    maior_id = max(maior_id, u["id"])
+            agora = online_userids()
+            for uid in agora ^ antes:
+                _reler_conta(uid, nome_conta(uid))
+            antes = agora
+            if time.time() - ultima_limpeza > 86400:
+                n = _limpar_backups()
+                ultima_limpeza = time.time()
+                if n:
+                    audit("limpeza_backups", apagados=n, dias=BACKUP_DIAS)
         except Exception as e:  # noqa: BLE001 - tenta de novo no proximo ciclo
             print("indice:", e, file=sys.stderr, flush=True)
-        time.sleep(INDICE_INTERVALO)
+        time.sleep(INDICE_TICK)
 
 
 def nome_conta(userid):
@@ -339,8 +524,9 @@ def lista_online():
     """Personagens em jogo agora. Sem o gdeliveryd, cai para as contas online e todos os personagens delas."""
     gms, jogo = gm_userids(), em_jogo()
     if jogo is not None:
-        return sorted(({"id": rid, "name": nome, "userid": uid, "account": nome_conta(uid), "online": True,
-                        "gm": uid in gms} for rid, (uid, nome) in jogo.items()), key=lambda x: x["name"].lower())
+        nomes = sorted(jogo.items(), key=lambda x: x[1][1].lower())
+        return {"total": len(nomes), "itens": [{"id": rid, "name": nome, "userid": uid, "account": nome_conta(uid),
+                                                "online": True, "gm": uid in gms} for rid, (uid, nome) in nomes[:ONLINE_MAX]]}
     out = []
     for uid in sorted(online_userids()):
         with _indice_lock:
@@ -349,7 +535,7 @@ def lista_online():
         roles = c["roles"] if c else _reler_conta(uid, conta)
         out += [{"id": rid, "name": nome, "userid": uid, "account": conta, "online": True, "gm": uid in gms}
                 for rid, nome in roles]
-    return out
+    return {"total": len(out), "itens": out[:ONLINE_MAX]}
 
 
 # Mascotes: status.petcorral = GPetCorral (capacity, [GPet(index, data)]) em GNET; data e o
@@ -526,9 +712,7 @@ def edit_role(roleid, changes):
         if not applied:
             return {"applied": {}}
 
-        backup = os.path.join(CFG["backup_dir"], f"{roleid}_{time.strftime('%Y%m%d_%H%M%S')}.bin")
-        with open(backup, "wb") as f:
-            f.write(raw)
+        backup = novo_backup(roleid, raw)
         retcode = p.put_role(GAMEDB, roleid, role)
         if retcode != 0:
             raise ValueError(f"PutRoleData retcode={retcode}")
@@ -575,9 +759,7 @@ def add_item(roleid, body):
         bolsa["items"].append(novo | {"pos": livre})
         bolsa["items"].sort(key=lambda it: it["pos"])
 
-        backup = os.path.join(CFG["backup_dir"], f"{roleid}_{time.strftime('%Y%m%d_%H%M%S')}.bin")
-        with open(backup, "wb") as f:
-            f.write(raw)
+        backup = novo_backup(roleid, raw)
         retcode = p.put_role(GAMEDB, roleid, role)
         if retcode != 0:
             raise ValueError(f"PutRoleData retcode={retcode}")
@@ -627,9 +809,7 @@ def remove_item(roleid, body):
         if local == "pets":
             gravar_curral(role, ler_curral(role)[0], itens)
 
-        backup = os.path.join(CFG["backup_dir"], f"{roleid}_{time.strftime('%Y%m%d_%H%M%S')}.bin")
-        with open(backup, "wb") as f:
-            f.write(raw)
+        backup = novo_backup(roleid, raw)
         retcode = p.put_role(GAMEDB, roleid, role)
         if retcode != 0:
             raise ValueError(f"PutRoleData retcode={retcode}")
@@ -643,8 +823,10 @@ def remove_item(roleid, body):
 
 
 def list_backups(roleid):
-    prefix = f"{roleid}_"
-    return sorted((f for f in os.listdir(CFG["backup_dir"]) if f.startswith(prefix)), reverse=True)
+    try:
+        return sorted((f for f in os.listdir(pasta_backup(roleid)) if _NOME_BACKUP.match(f)), reverse=True)
+    except FileNotFoundError:
+        return []
 
 
 # Descricao dos backups: o motivo vem do audit.log (acao que gerou o backup) e o resumo vem do
@@ -656,37 +838,29 @@ ROTULOS = {"status.level": "nível", "status.exp": "XP", "status.sp": "SP", "sta
            "pocket.capacity": "espaços da bolsa", "storehouse.capacity": "espaços do banco",
            "pets.capacity": "espaços de mascotes", "status.worldtag": "posição", "status.posx": "posição",
            "status.posy": "posição", "status.posz": "posição"}
-_motivos = {"chave": None, "mapa": {}}
 _resumos = {}
 
 
 def _data_backup(nome):
     """1024_20261030_030838.bin -> '30/10 03:08'."""
     try:
-        d, h = nome.rsplit(".", 1)[0].split("_")[1:3]
+        d, h = _NOME_BACKUP.match(nome).groups()[1:3]
         return f"{d[6:8]}/{d[4:6]} {h[:2]}:{h[2:4]}"
-    except (ValueError, IndexError):
+    except (ValueError, IndexError, AttributeError):
         return nome
 
 
-def _motivos_backup():
-    try:
-        st = os.stat(CFG["audit_log"])
-    except FileNotFoundError:
-        return {}
-    if _motivos["chave"] != (st.st_mtime, st.st_size):
-        mapa = {}
-        with open(CFG["audit_log"], encoding="utf-8") as f:
-            for linha in f:
-                try:
-                    e = json.loads(linha)
-                except ValueError:
-                    continue
-                arq = e.get("backup") or e.get("safety_backup")
-                if arq:
-                    mapa[os.path.basename(arq)] = e
-        _motivos.update(chave=(st.st_mtime, st.st_size), mapa=mapa)
-    return _motivos["mapa"]
+def _motivos_backup(roleid):
+    """backup -> registro da auditoria que o criou (acao, admin e dados)."""
+    mapa = {}
+    for row in db_exec("SELECT backup, acao, admin, dados FROM pwadmin_auditoria WHERE roleid=%s "
+                       "AND backup IS NOT NULL ORDER BY id DESC LIMIT %s", (roleid, BACKUPS_LISTADOS * 2)):
+        try:
+            e = json.loads(row["dados"])
+        except ValueError:
+            e = {}
+        mapa.setdefault(row["backup"], e | {"action": row["acao"], "admin": row["admin"]})
+    return mapa
 
 
 def _motivo(e):
@@ -715,7 +889,7 @@ def _motivo(e):
 def _resumo(nome):
     if nome not in _resumos:
         try:
-            with open(os.path.join(CFG["backup_dir"], nome), "rb") as f:
+            with open(arquivo_backup(nome.split("_")[0], nome), "rb") as f:
                 role = p.decode(p.GRoleData, p.Reader(f.read()))
             pk, sh = role["pocket"], role["storehouse"]
             _resumos[nome] = {"nivel": role["status"]["level"], "gold": pk["money"] + sh["money"],
@@ -726,22 +900,25 @@ def _resumo(nome):
 
 
 def backups_json(roleid):
-    motivos = _motivos_backup()
-    return [{"file": f, "quando": _data_backup(f), "motivo": _motivo(motivos.get(f))} | _resumo(f)
-            for f in list_backups(roleid)[:BACKUPS_LISTADOS]]
+    try:
+        motivos = _motivos_backup(roleid)
+    except Exception:  # noqa: BLE001 - sem banco: lista sem motivo
+        motivos = {}
+    out = []
+    for f in list_backups(roleid)[:BACKUPS_LISTADOS]:
+        e = motivos.get(f)
+        out.append({"file": f, "quando": _data_backup(f), "motivo": _motivo(e),
+                    "admin": (e or {}).get("admin", "")} | _resumo(f))
+    return out
 
 
 def snapshot_role(roleid, body):
     """Backup manual (nao altera o personagem). Com o jogador online, guarda o ultimo salvamento do jogo."""
     nota = str(body.get("nota", ""))[:60]
     _, raw = p.get_role(GAMEDB, roleid)
-    backup = os.path.join(CFG["backup_dir"], f"{roleid}_{time.strftime('%Y%m%d_%H%M%S')}.bin")
-    if os.path.exists(backup):
-        raise ValueError("já existe um backup deste segundo; tente de novo")
-    with open(backup, "wb") as f:
-        f.write(raw)
-    audit("snapshot", roleid=roleid, nota=nota, backup=os.path.basename(backup))
-    return {"ok": True, "backup": os.path.basename(backup)}
+    backup = novo_backup(roleid, raw)
+    audit("snapshot", roleid=roleid, nota=nota, backup=backup)
+    return {"ok": True, "backup": backup}
 
 
 def restore_role(roleid, filename):
@@ -750,13 +927,11 @@ def restore_role(roleid, filename):
     with write_lock:
         if p.get_role(GAMEDB, roleid)[0]["base"]["userid"] in online_userids():
             raise ValueError("personagem online: desconecte o jogador antes de restaurar")
-        with open(os.path.join(CFG["backup_dir"], filename), "rb") as f:
+        with open(arquivo_backup(roleid, filename), "rb") as f:
             raw = f.read()
         role = p.decode(p.GRoleData, p.Reader(raw))
         current_raw = p.get_role(GAMEDB, roleid)[1]
-        safety = os.path.join(CFG["backup_dir"], f"{roleid}_{time.strftime('%Y%m%d_%H%M%S')}.bin")
-        with open(safety, "wb") as f:
-            f.write(current_raw)
+        safety = novo_backup(roleid, current_raw)
         retcode = p.put_role(GAMEDB, roleid, role)
         if retcode != 0:
             raise ValueError(f"PutRoleData retcode={retcode}")
@@ -889,10 +1064,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _session(self):
+        """Nome do admin logado (e guarda admin e IP para a auditoria), ou None."""
         for part in self.headers.get("Cookie", "").split(";"):
             k, _, v = part.strip().partition("=")
-            if k == "pwadmin" and SESSIONS.get(v, 0) > time.time():
-                return v
+            expira, nome = SESSIONS.get(v, (0, ""))
+            if k == "pwadmin" and expira > time.time() and admin_ativo(nome):
+                CTX.admin, CTX.ip, CTX.token = nome, self.client_address[0], v
+                return nome
         return None
 
     def _body(self):
@@ -907,6 +1085,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not self._session():
             return self._send(401, {"error": "login necessario"})
         try:
+            if path == "/api/eu":
+                return self._send(200, {"admin": CTX.admin})
             if path == "/api/busca":
                 q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("q", [""])[0]
                 return self._send(200, buscar(q[:40]))
@@ -948,7 +1128,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 nome = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("file", [""])[0]
                 if nome not in list_backups(rid):
                     return self._send(404, {"error": "backup nao encontrado"})
-                with open(os.path.join(CFG["backup_dir"], nome), "rb") as f:
+                with open(arquivo_backup(rid, nome), "rb") as f:
                     role = p.decode(p.GRoleData, p.Reader(f.read()))
                 return self._send(200, role_json(role) | {"backups": backups_json(rid), "backup": nome,
                                                           "account": nome_conta(role["base"]["userid"])})
@@ -969,18 +1149,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             body = self._body()
             if path == "/api/login":
-                digest = hashlib.sha256(str(body.get("password", "")).encode()).hexdigest()
-                if not hmac.compare_digest(digest, CFG["password_sha256"]):
+                nome = str(body.get("usuario", "")).strip()[:32] or "admin"
+                if not login_admin(nome, str(body.get("password", ""))):
                     time.sleep(1)
-                    audit("login_fail", ip=self.client_address[0])
-                    return self._send(403, {"error": "senha incorreta"})
+                    audit("login_fail", admin=nome, ip=self.client_address[0])
+                    return self._send(403, {"error": "usuário ou senha incorretos"})
                 token = secrets.token_urlsafe(32)
-                SESSIONS[token] = time.time() + SESSION_TTL
-                audit("login", ip=self.client_address[0])
+                SESSIONS[token] = (time.time() + SESSION_TTL, nome)
+                audit("login", admin=nome, ip=self.client_address[0])
                 return self._send(200, {"ok": True}, headers={
                     "Set-Cookie": f"pwadmin={token}; HttpOnly; SameSite=Strict; Path=/"})
             if not self._session():
                 return self._send(401, {"error": "login necessario"})
+            if path == "/api/logout":
+                SESSIONS.pop(CTX.token, None)
+                audit("logout")
+                return self._send(200, {"ok": True}, headers={
+                    "Set-Cookie": "pwadmin=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"})
             parts = path.strip("/").split("/")
             if len(parts) == 4 and parts[:2] == ["api", "role"] and parts[3] == "edit":
                 return self._send(200, edit_role(int(parts[2]), body.get("changes", {})))
@@ -1005,7 +1190,35 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send(500, {"error": str(e)})
 
 
+def comando_admin(args):
+    """python3 -I server.py admin NOME      cria o admin (ou troca a senha) e mostra a senha nova
+       python3 -I server.py desativar NOME  bloqueia o acesso (sai em ate 60 s)
+       python3 -I server.py admins          lista os admins"""
+    preparar_banco()
+    if args[0] == "admins":
+        for a in db_exec("SELECT nome, ativo, criado, ultimo_login FROM pwadmin_admins ORDER BY nome"):
+            print(f"{a['nome']:<20} {'ativo' if a['ativo'] else 'DESATIVADO':<11} criado {a['criado']}  "
+                  f"último login {a['ultimo_login'] or '-'}")
+        return
+    nome = args[1].strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{2,32}", nome):
+        raise SystemExit("nome: 2 a 32 letras, numeros, _ . -")
+    if args[0] == "admin":
+        senha = secrets.token_urlsafe(12)
+        db_exec("INSERT INTO pwadmin_admins (nome, senha) VALUES (%s, %s) "
+                "ON DUPLICATE KEY UPDATE senha=VALUES(senha), ativo=1", (nome, hash_senha(senha)))
+        audit("admin_senha", admin="console", alvo=nome)
+        print(f"Admin {nome} · senha: {senha}")
+    elif args[0] == "desativar":
+        db_exec("UPDATE pwadmin_admins SET ativo=0 WHERE nome=%s", (nome,))
+        audit("admin_desativado", admin="console", alvo=nome)
+        print(f"Admin {nome} desativado.")
+
+
 def main():
+    if len(sys.argv) > 1:
+        return comando_admin(sys.argv[1:])
+    preparar_banco()
     threading.Thread(target=_manter_indice, daemon=True).start()
     srv = http.server.ThreadingHTTPServer((CFG["bind"], CFG["port"]), Handler)
     print(f"PW Admin em http://{CFG['bind']}:{CFG['port']}", flush=True)

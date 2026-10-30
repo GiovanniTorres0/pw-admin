@@ -183,7 +183,8 @@
 <div id="login" class="card" hidden>
   <h2>PW Admin</h2>
   <form id="loginForm" class="row">
-    <input id="pw" type="password" placeholder="Senha do painel" autofocus style="flex:1">
+    <input id="usuario" placeholder="Usuário" autocomplete="username" autofocus style="flex:1">
+    <input id="pw" type="password" placeholder="Senha" autocomplete="current-password" style="flex:1">
     <button class="btn">Entrar</button>
   </form>
   <div id="loginMsg" class="msg"></div>
@@ -191,7 +192,8 @@
 
 <div id="app" hidden>
   <header><h1>PW Admin</h1><span class="muted">PW Teste · v156</span>
-    <button class="btn sec" id="openSrv" style="margin-left:auto">Aviso global</button></header>
+    <button class="btn sec" id="openSrv" style="margin-left:auto">Aviso global</button>
+    <span class="muted" id="eu"></span><button class="ibtn" id="sair" title="Sair">⎋</button></header>
   <main>
     <div>
       <section class="card"><div class="sbar"><input id="accSearch" type="search" placeholder="Buscar personagem, conta ou #ID  ( / )" autocomplete="off"></div>
@@ -293,9 +295,13 @@ let selected = null;
 
 $("loginForm").onsubmit = async (e) => {
   e.preventDefault();
-  try { await api("/api/login", { password: $("pw").value }); show("app"); await loadIcones(); loadAccounts(); }
+  try {
+    await api("/api/login", { usuario: $("usuario").value.trim(), password: $("pw").value });
+    $("pw").value = ""; show("app"); await loadIcones(); loadAccounts();
+  }
   catch (err) { const m = $("loginMsg"); m.textContent = err.message; m.className = "msg bad"; }
 };
+$("sair").onclick = async () => { try { await api("/api/logout", {}); } catch { /* ja saiu */ } show("login"); };
 $("openSrv").onclick = () => { $("srv").showModal(); $("bcText").focus(); };
 $("srvClose").onclick = () => $("srv").close();
 $("cashClose").onclick = () => $("cashDlg").close();
@@ -349,11 +355,15 @@ function mostrarLista(html) {
 function renderLateral() {
   if ($("accSearch").value.trim()) return;
   const on = new Set(ONLINE.map((r) => r.id));
-  mostrarLista(secao(`Online agora · ${ONLINE.length}`, ONLINE, "", "Ninguém online.")
+  mostrarLista(secao(`Online agora · ${fmt(ONLINE_TOTAL)}`, ONLINE, "", "Ninguém online.")
+    + (ONLINE_TOTAL > ONLINE.length ? `<p class="muted" style="font-size:12px">Mostrando ${ONLINE.length}. Use a busca.</p>` : "")
     + secao("Recentes", RECENTES.map((r) => ({ ...r, online: on.has(r.id) })), "", ""));
 }
+let ONLINE_TOTAL = 0;
+async function carregarOnline() { const o = await api("/api/online"); ONLINE = o.itens; ONLINE_TOTAL = o.total; }
 async function loadAccounts() {
-  ONLINE = await api("/api/online");
+  await carregarOnline();
+  api("/api/eu").then((e) => $("eu").textContent = e.admin).catch(() => {});
   show("app");
   renderLateral();
 }
@@ -395,7 +405,7 @@ const ocupado = () => VENDO || document.querySelector("dialog[open], #selBar:not
   || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) && $("detail").contains(document.activeElement);
 setInterval(async () => {
   if (document.hidden) return;
-  try { ONLINE = await api("/api/online"); renderLateral(); } catch { /* tenta de novo */ }
+  try { await carregarOnline(); renderLateral(); } catch { /* tenta de novo */ }
 }, 30000);
 async function conferir() {
   if (document.hidden || !selected || ocupado()) return;
@@ -574,7 +584,7 @@ async function loadRole(id, silencioso = false, backup = null) {
       </div>
       <h3>Backups</h3>
       <div class="row" style="margin-top:0">${r.backups.length ? `<select id="bk" style="flex:1;min-width:0">${r.backups.map((b) =>
-        `<option value="${esc(b.file)}">${esc([b.quando, b.motivo, b.nivel && `Nv ${b.nivel}`, b.gold !== undefined && `${fmt(b.gold)} gold`,
+        `<option value="${esc(b.file)}">${esc([b.quando, b.motivo, b.admin && `por ${b.admin}`, b.nivel && `Nv ${b.nivel}`, b.gold !== undefined && `${fmt(b.gold)} gold`,
           b.itens !== undefined && `${b.itens} itens`].filter(Boolean).join(" · "))}</option>`).join("")}</select>
         <button class="btn sec" id="bkVer" title="Ver o que o personagem tinha, sem restaurar">Ver</button>
         <button class="btn sec danger" id="restore" ${r.online ? "disabled" : ""}>Restaurar</button>` : '<span class="muted" style="flex:1">nenhum</span>'}

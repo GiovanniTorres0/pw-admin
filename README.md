@@ -20,6 +20,8 @@ Painel web para administrar um servidor de **Perfect World 1.5.5 (v156)**: conta
 - Cada gravação mexe **somente no personagem escolhido**: faz backup antes, confere depois e registra em `audit.log`.
 - Tirar item confere ID e posição contra o que está gravado (página desatualizada não apaga o item errado).
 - Campos editáveis e limites ficam numa lista fechada (`EDITABLE` em `server.py`); o resto é recusado.
+- Um login por GM (senha PBKDF2 com sal). Toda ação vai para a tabela `pwadmin_auditoria` no MariaDB, com GM, IP e backup gerado.
+- Backups numa pasta por personagem, apagados após 30 dias (o mais recente de cada um sempre fica).
 - POST exige o cabeçalho `X-PWAdmin: 1` (contra CSRF); cookie `HttpOnly; SameSite=Strict`.
 
 ## Instalar (no servidor do jogo)
@@ -27,7 +29,15 @@ Painel web para administrar um servidor de **Perfect World 1.5.5 (v156)**: conta
 ```bash
 sudo apt install python3-pymysql
 git clone https://github.com/GiovanniTorres0/pw-admin.git ~/pwpanel && cd ~/pwpanel
-python3 -I server.py        # 1ª vez: cria config.json e mostra a senha do painel
+python3 -I server.py        # 1ª vez: cria config.json e mostra a senha do usuário admin
+```
+
+GMs (as tabelas `pwadmin_*` são criadas sozinhas no banco do authd):
+
+```bash
+python3 -I server.py admin NOME       # cria o GM ou troca a senha (mostra a senha nova)
+python3 -I server.py desativar NOME   # bloqueia o acesso (cai em até 60 s)
+python3 -I server.py admins           # lista
 ```
 
 Depois edite `config.json` (modelo em `config.exemplo.json`): endereço do `gamedbd` (29400) e do `gdeliveryd` (29100), e usuário e senha do MariaDB do authd. Para trocar a senha do painel, apague `config.json` e rode de novo.
