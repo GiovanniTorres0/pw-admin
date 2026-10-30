@@ -103,6 +103,13 @@
   #mItemInfo { min-height:0; margin-top:8px; }
   .selbar[hidden] { display:none; }
   .invh { border-top:1px solid var(--line); margin-top:12px; padding-top:10px; }
+  .invh.first { border-top:0; margin-top:0; padding-top:0; }
+  .sec .eq:first-of-type { margin-top:10px; }
+  h3.tog { cursor:pointer; user-select:none; }
+  h3.tog::before { content:"▾"; display:inline-block; width:14px; color:var(--muted); transition:transform .12s; }
+  .fechado > h3.tog::before, .fechado > .invh > h3.tog::before { transform:rotate(-90deg); }
+  .card.fechado > :not(h3:first-child), .sec.fechado > :not(.invh) { display:none; }
+  #detail .card.fechado > h3 { margin-bottom:0; }
   #detail .invh h3 { border:0; margin:0; padding:0; }
   #detail h3 + .row, #detail .mail + .row { margin-top:8px; }
   @media (max-width:1100px) {
@@ -441,11 +448,25 @@ function extraInv(r) {
   const blocos = [["Banco de moda", r.dress, "dress"], ["Banco de materiais", r.material, "material"],
                   ["Cartas", r.generalcard, "generalcard"]]
     .filter(([, b]) => b && b.items.length)
-    .map(([t, b, k]) => `<h3>${t} · ${b.items.length}/${b.capacity}</h3>${invGrid(b.items, k, b.capacity)}`);
-  if (r.task_items?.length) blocos.push(`<h3>Itens de missão · ${r.task_items.length}</h3>${invGrid(r.task_items, "task", 0)}`);
+    .map(([t, b, k]) => `<div class="sec"><div class="invh"><h3>${t} · ${b.items.length}/${b.capacity}</h3></div><div style="margin-top:10px">${invGrid(b.items, k, b.capacity)}</div></div>`);
+  if (r.task_items?.length) blocos.push(`<div class="sec"><div class="invh"><h3>Itens de missão · ${r.task_items.length}</h3></div><div style="margin-top:10px">${invGrid(r.task_items, "task", 0)}</div></div>`);
   return blocos.join("");
 }
 
+// Secoes recolhiveis: clique no titulo. O estado fica salvo neste navegador.
+let FECHADOS = new Set();
+try { FECHADOS = new Set(JSON.parse(localStorage.getItem("pwFechados") || "[]")); } catch { /* sem armazenamento */ }
+function ligarSecoes(d) {
+  d.querySelectorAll(".sec > .invh > h3, .card > h3:first-child").forEach((h) => {
+    const box = h.closest(".sec, .card"), k = h.textContent.split("·")[0].trim();
+    h.classList.add("tog");
+    box.classList.toggle("fechado", FECHADOS.has(k));
+    h.onclick = () => {
+      if (box.classList.toggle("fechado")) FECHADOS.add(k); else FECHADOS.delete(k);
+      try { localStorage.setItem("pwFechados", JSON.stringify([...FECHADOS])); } catch { /* sem armazenamento */ }
+    };
+  });
+}
 // silencioso: atualizacao automatica, sem "Carregando" e mantendo a rolagem das colunas
 async function loadRole(id, silencioso = false) {
   selected = id;
@@ -509,8 +530,8 @@ async function loadRole(id, silencioso = false) {
      </div>
      <div class="dcol">
       <section class="card">
-      <h3>Equipado</h3>${equipGrid(r.equipment)}
-      <div class="invh"><h3>Bolsa · ${r.pocket.items.length}/${r.pocket.capacity}</h3><label class="cap gold">Gold <input class="ouro" data-k="pocket.money" data-v="${r.pocket.money}" value="${r.pocket.money}" type="number" min="0" max="2000000000"></label><label class="cap" title="Expansão: 32 a 64, de 8 em 8">Espaços <input data-k="pocket.capacity" data-v="${r.pocket.capacity}" value="${r.pocket.capacity}" type="number" min="32" max="64" step="8"></label>
+      <div class="sec"><div class="invh first"><h3>Equipado</h3></div>${equipGrid(r.equipment)}</div>
+      <div class="sec"><div class="invh"><h3>Bolsa · ${r.pocket.items.length}/${r.pocket.capacity}</h3><label class="cap gold">Gold <input class="ouro" data-k="pocket.money" data-v="${r.pocket.money}" value="${r.pocket.money}" type="number" min="0" max="2000000000"></label><label class="cap" title="Expansão: 32 a 64, de 8 em 8">Espaços <input data-k="pocket.capacity" data-v="${r.pocket.capacity}" value="${r.pocket.capacity}" type="number" min="32" max="64" step="8"></label>
         <button class="btn sec" id="aiToggle" ${r.online ? "disabled" : ""}>+ Adicionar</button></div>
       <div class="addbox" id="aiBox" hidden>
         <div class="grid">
@@ -523,11 +544,11 @@ async function loadRole(id, silencioso = false) {
         <div id="aiItemInfo" class="muted" style="margin-top:8px"></div>
         <div class="row"><button class="btn" id="aiAdd">Colocar</button></div>
       </div>
-      <div style="margin-top:10px">${invGrid(r.pocket.items, "pocket", r.pocket.capacity)}</div>
-      <div class="invh"><h3>Banco · ${r.storehouse.items.length}/${r.storehouse.capacity}</h3><label class="cap gold">Gold <input class="ouro" data-k="storehouse.money" data-v="${r.storehouse.money}" value="${r.storehouse.money}" type="number" min="0" max="2000000000"></label><label class="cap" title="Expansão: 16 a 120, de 8 em 8">Espaços <input data-k="storehouse.capacity" data-v="${r.storehouse.capacity}" value="${r.storehouse.capacity}" type="number" min="16" max="120" step="8"></label></div>
-      <div style="margin-top:10px">${invGrid(r.storehouse.items, "storehouse", r.storehouse.capacity)}</div>
-      <div class="invh"><h3>Mascotes · ${r.pets.items.length}/${r.pets.capacity}</h3><label class="cap" title="Espaços do curral: 1 a 10">Espaços <input data-k="pets.capacity" data-v="${r.pets.capacity}" value="${r.pets.capacity}" type="number" min="1" max="10"></label></div>
-      <div style="margin-top:10px">${invGrid(r.pets.items, "pets", r.pets.capacity)}</div>
+      <div style="margin-top:10px">${invGrid(r.pocket.items, "pocket", r.pocket.capacity)}</div></div>
+      <div class="sec"><div class="invh"><h3>Banco · ${r.storehouse.items.length}/${r.storehouse.capacity}</h3><label class="cap gold">Gold <input class="ouro" data-k="storehouse.money" data-v="${r.storehouse.money}" value="${r.storehouse.money}" type="number" min="0" max="2000000000"></label><label class="cap" title="Expansão: 16 a 120, de 8 em 8">Espaços <input data-k="storehouse.capacity" data-v="${r.storehouse.capacity}" value="${r.storehouse.capacity}" type="number" min="16" max="120" step="8"></label></div>
+      <div style="margin-top:10px">${invGrid(r.storehouse.items, "storehouse", r.storehouse.capacity)}</div></div>
+      <div class="sec"><div class="invh"><h3>Mascotes · ${r.pets.items.length}/${r.pets.capacity}</h3><label class="cap" title="Espaços do curral: 1 a 10">Espaços <input data-k="pets.capacity" data-v="${r.pets.capacity}" value="${r.pets.capacity}" type="number" min="1" max="10"></label></div>
+      <div style="margin-top:10px">${invGrid(r.pets.items, "pets", r.pets.capacity)}</div></div>
       ${extraInv(r)}
       <div class="selbar" id="selBar" hidden></div>
       </section>
@@ -625,6 +646,7 @@ async function loadRole(id, silencioso = false) {
   };
   const LOCAL = { equipment: "Equipado", pocket: "Bolsa", storehouse: "Banco", dress: "Banco de moda",
                   material: "Banco de materiais", generalcard: "Cartas", task: "Itens de missão", pets: "Mascotes" };
+  ligarSecoes(d);
   if (rolagem) d.querySelectorAll(".dcol").forEach((c, i) => c.scrollTop = rolagem[i] || 0);
   $("roleReload").onclick = () => {
     if (!d.querySelector("input.changed") || confirm("Descartar as alterações não salvas?")) loadRole(id);
