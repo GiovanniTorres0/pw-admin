@@ -352,6 +352,58 @@ def lista_online():
     return out
 
 
+# Mascotes: status.petcorral = GPetCorral (capacity, [GPet(index, data)]) em GNET; data e o
+# pet_data do gs (petman.h), little-endian: honor, hunger, feed, pet_tid, vis_tid, egg_tid,
+# classe, hp_factor, level, color, exp, skill_point, bind, unused, name_len, name[16].
+PET_FMT = "<7ifhHiibbH16s"
+PET_MAX = 10  # espacos do curral que o painel aceita
+PET_CLASSES = ["Montaria", "Combate", "Seguidor", "Invocado", "Planta", "Evolução"]
+
+
+def ler_curral(role):
+    b = role["status"]["petcorral"]
+    if not b:
+        return 0, []
+    r = p.Reader(b)
+    cap, pets = r._take(">i"), []
+    for _ in range(r.cuint()):
+        idx, data = r._take(">i"), r.octets()
+        pets.append({"pos": idx, "id": struct.unpack_from("<i", data, 20)[0], "count": 1, "data": data})
+    return cap, pets
+
+
+def gravar_curral(role, cap, pets):
+    w = p.Writer()
+    w.put(">i", cap)
+    w.cuint(len(pets))
+    for pet in sorted(pets, key=lambda x: x["pos"]):
+        w.put(">i", pet["pos"])
+        w.octets(pet["data"])
+    role["status"]["petcorral"] = w.bytes()
+
+
+def pets_json(role):
+    cap, pets = ler_curral(role)
+    out = []
+    for pet in pets:
+        try:
+            (_h, _f, _p, pet_tid, _v, egg, classe, hp, level, _c, exp, sp, _b, _u,
+             nlen, nome) = struct.unpack_from(PET_FMT, pet["data"])
+        except struct.error:
+            out.append({"pos": pet["pos"], "id": pet["id"], "count": 1, "nome": "mascote", "dica": ["^ffffffMascote"]})
+            continue
+        ovo = ITENS.get(str(egg), {}).get("nome", "")
+        nome = nome[:max(0, min(nlen, 16))].decode("utf-16-le", "replace") or ovo or f"mascote {pet_tid}"
+        tipo = PET_CLASSES[classe] if 0 <= classe < len(PET_CLASSES) else str(classe)
+        dica = [f"^ffcb4a{nome}", f"^ffffffNível {level} · {tipo}", f"^ffffffXP {exp} · pontos de perícia {sp}"]
+        if hp <= 0:
+            dica.append("^ff4040Morto")
+        if ovo:
+            dica.append(f"^a0a0a0Ovo: {ovo} (#{egg})")
+        out.append({"pos": pet["pos"], "id": egg, "count": 1, "nome": nome, "dica": dica})
+    return {"capacity": cap, "items": out}
+
+
 def item_info(tid, count=1):
     item = ITENS.get(str(tid), {})
     return {"nome": item.get("nome", ""), "dica": dica.linhas_da_dica(tid, item, count)}
@@ -393,6 +445,7 @@ def role_json(role):
         "material": {"capacity": sh["size2"], "items": inv_json(sh["material"])},
         "generalcard": {"capacity": sh["size3"], "items": inv_json(sh["generalcard"])},
         "task_items": inv_json(role["task"]["task_inventory"]),
+        "pets": pets_json(role),
         "online": b["userid"] in online_userids(),  # conta logada: bloqueia gravacao
         "em_jogo": b["id"] in (em_jogo() or {}),
     }
@@ -417,6 +470,18 @@ def edit_role(roleid, changes):
                     raise ValueError(f"{NOMES_ATRIBUTOS[field]} = {value}: use um valor entre "
                                      f"{ATRIBUTO_MIN} e {ATRIBUTO_MAX}.")
                 novos_atributos[field] = value
+                continue
+            if key == "pets.capacity":
+                value = int(value)
+                cap, pets = ler_curral(role)
+                if not 1 <= value <= PET_MAX:
+                    raise ValueError(f"Mascotes: use de 1 a {PET_MAX} espaços.")
+                ultimo = max((x["pos"] + 1 for x in pets), default=0)
+                if value < ultimo:
+                    raise ValueError(f"Mascotes: há mascote no espaço {ultimo}; tire-o antes de reduzir para {value}.")
+                if value != cap:
+                    applied[key] = [cap, value]
+                    gravar_curral(role, value, pets)
                 continue
             if (section, field) in EDITABLE:
                 lo, hi = EDITABLE[(section, field)]
@@ -529,7 +594,7 @@ LOCAIS = {"pocket": lambda r: r["pocket"]["items"], "storehouse": lambda r: r["s
           "equipment": lambda r: r["equipment"]["inv"], "dress": lambda r: r["storehouse"]["dress"],
           "material": lambda r: r["storehouse"]["material"],
           "generalcard": lambda r: r["storehouse"]["generalcard"],
-          "task": lambda r: r["task"]["task_inventory"]}
+          "task": lambda r: r["task"]["task_inventory"], "pets": lambda r: ler_curral(r)[1]}
 
 
 def remove_item(roleid, body):
@@ -559,6 +624,8 @@ def remove_item(roleid, body):
             itens.remove(alvo)
         else:
             alvo["count"] = antes - count
+        if local == "pets":
+            gravar_curral(role, ler_curral(role)[0], itens)
 
         backup = os.path.join(CFG["backup_dir"], f"{roleid}_{time.strftime('%Y%m%d_%H%M%S')}.bin")
         with open(backup, "wb") as f:

@@ -119,7 +119,9 @@
   .slot b { position:absolute; right:3px; bottom:1px; font-size:10px; font-weight:600; color:#fff; text-shadow:0 0 3px #000, 0 0 2px #000; }
   .invh { display:flex; align-items:center; gap:8px; }
   .invh h3 { flex:1; }
-  .selbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:12px; padding:8px 10px; border-radius:8px; background:var(--soft); }
+  .selbar { position:fixed; z-index:20; display:flex; gap:8px; align-items:center; max-width:460px; padding:8px 10px; border-radius:10px;
+            background:var(--card); border:1px solid var(--line); box-shadow:0 8px 24px rgba(0,0,0,.35); }
+  .selbar .muted { font-size:12px; white-space:nowrap; }
   .addbox { margin-top:10px; padding:12px; border:1px dashed var(--line); border-radius:8px; }
   /* Aviso flutuante unico */
   #toast { position:fixed; left:50%; bottom:20px; transform:translateX(-50%); z-index:30; max-width:min(560px, calc(100vw - 32px));
@@ -373,21 +375,31 @@ document.addEventListener("keydown", (e) => {
 // Atualizacao automatica: online a cada 30 s; o personagem aberto confere a impressao digital
 // a cada 10 s e so recarrega se mudou, nunca com edicao pendente, caixa aberta ou campo em foco.
 let VERSAO = null;
-const ocupado = () => document.querySelector("dialog[open], #selBar:not([hidden])") || !$("aiBox")?.hidden
-  || [...$("detail").querySelectorAll("input, textarea")].some((i) => i.value !== i.defaultValue)
+// Ocupado = edicao pendente (campos do Salvar), correio em digitacao, caixa de adicionar ou
+// item selecionado abertos, ou cursor num campo do personagem.
+const ocupado = () => document.querySelector("dialog[open], #selBar:not([hidden]), #detail input.changed")
+  || $("aiBox") && !$("aiBox").hidden
+  || ["mText", "mMoney", "mItem"].some((k) => $(k)?.value)
   || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) && $("detail").contains(document.activeElement);
 setInterval(async () => {
   if (document.hidden) return;
   try { ONLINE = await api("/api/online"); renderLateral(); } catch { /* tenta de novo */ }
 }, 30000);
-setInterval(async () => {
+async function conferir() {
   if (document.hidden || !selected || ocupado()) return;
   const id = selected;
   try {
     const v = await api(`/api/role/${id}/versao`);
-    if (id === selected && VERSAO && (v.v !== VERSAO.v || v.online !== VERSAO.online || v.em_jogo !== VERSAO.em_jogo) && !ocupado()) loadRole(id, true);
+    if (id !== selected) return;
+    const mudou = VERSAO && (v.v !== VERSAO.v || v.online !== VERSAO.online || v.em_jogo !== VERSAO.em_jogo);
+    if (mudou && !ocupado()) await loadRole(id, true);
+    const b = $("roleReload");
+    if (b) b.title = `Recarregar · conferido às ${new Date().toLocaleTimeString("pt-BR")} (a cada 10 s)`;
   } catch { /* tenta de novo */ }
-}, 10000);
+}
+setInterval(conferir, 10000);
+// Voltando para a aba (ex.: saiu do jogo), confere na hora
+document.addEventListener("visibilitychange", () => { if (!document.hidden) conferir(); });
 
 const FIELDS = [
   ["status.level", "Nível"], ["status.exp", "XP"], ["status.sp", "SP (espírito)"],
@@ -457,7 +469,7 @@ async function loadRole(id, silencioso = false) {
       <div class="rtop">
         <h2>${esc(r.name)}</h2>
         <span class="tag">Nv ${r.status.level}</span><span class="muted">${r.cls_name} · conta ${esc(r.account || "#" + r.userid)}</span>
-        ${r.em_jogo ? '<span class="tag on">em jogo · só leitura</span>' : r.online ? '<span class="tag" title="Outro personagem da conta está logado ou na seleção">conta logada · só leitura</span>' : ""}
+        ${r.em_jogo ? '<span class="tag on" title="Itens e dados do último salvamento do jogo; atualiza sozinho">em jogo · só leitura</span>' : r.online ? '<span class="tag" title="Outro personagem da conta está logado ou na seleção">conta logada · só leitura</span>' : ""}
         <div class="acts"><span id="pend" class="muted"></span>
           <button class="ibtn" id="roleReload" title="Recarregar (atualiza sozinho a cada 10 s)">↻</button>
           <button class="btn sec" id="cashBtn" title="Dar cash para a conta ${esc(r.account || "#" + r.userid)}">Cash</button>
@@ -514,6 +526,8 @@ async function loadRole(id, silencioso = false) {
       <div style="margin-top:10px">${invGrid(r.pocket.items, "pocket", r.pocket.capacity)}</div>
       <div class="invh"><h3>Banco · ${r.storehouse.items.length}/${r.storehouse.capacity}</h3><label class="cap gold">Gold <input class="ouro" data-k="storehouse.money" data-v="${r.storehouse.money}" value="${r.storehouse.money}" type="number" min="0" max="2000000000"></label><label class="cap" title="Expansão: 16 a 120, de 8 em 8">Espaços <input data-k="storehouse.capacity" data-v="${r.storehouse.capacity}" value="${r.storehouse.capacity}" type="number" min="16" max="120" step="8"></label></div>
       <div style="margin-top:10px">${invGrid(r.storehouse.items, "storehouse", r.storehouse.capacity)}</div>
+      <div class="invh"><h3>Mascotes · ${r.pets.items.length}/${r.pets.capacity}</h3><label class="cap" title="Espaços do curral: 1 a 10">Espaços <input data-k="pets.capacity" data-v="${r.pets.capacity}" value="${r.pets.capacity}" type="number" min="1" max="10"></label></div>
+      <div style="margin-top:10px">${invGrid(r.pets.items, "pets", r.pets.capacity)}</div>
       ${extraInv(r)}
       <div class="selbar" id="selBar" hidden></div>
       </section>
@@ -610,24 +624,35 @@ async function loadRole(id, silencioso = false) {
     } catch (e) { msg($("saveMsg"), e.message, false); }
   };
   const LOCAL = { equipment: "Equipado", pocket: "Bolsa", storehouse: "Banco", dress: "Banco de moda",
-                  material: "Banco de materiais", generalcard: "Cartas", task: "Itens de missão" };
+                  material: "Banco de materiais", generalcard: "Cartas", task: "Itens de missão", pets: "Mascotes" };
   if (rolagem) d.querySelectorAll(".dcol").forEach((c, i) => c.scrollTop = rolagem[i] || 0);
   $("roleReload").onclick = () => {
     if (!d.querySelector("input.changed") || confirm("Descartar as alterações não salvas?")) loadRole(id);
   };
   $("cashBtn").onclick = () => abrirCash(r.userid, r.account || `#${r.userid}`);
+  const fecharSel = () => { $("selBar").hidden = true; d.querySelectorAll(".slot.sel").forEach((x) => x.classList.remove("sel")); };
+  d.querySelectorAll(".dcol").forEach((c) => c.addEventListener("scroll", fecharSel));
+  d.onmousedown = (e) => { if (!e.target.closest("#selBar, .slot")) fecharSel(); };
+  d.onkeydown = (e) => { if (e.key === "Escape") fecharSel(); };
   d.querySelectorAll(".slot:not(.vazio)").forEach((s) => s.onclick = () => {
     d.querySelectorAll(".slot.sel").forEach((x) => x.classList.remove("sel"));
     s.classList.add("sel");
     const total = Number(s.dataset.count), bar = $("selBar");
     bar.hidden = false;
+    tip.hidden = true;
     bar.innerHTML = `${icon(s.dataset.id)} <strong>${s.dataset.nome}</strong>
-      <span class="muted">#${s.dataset.id} · ${LOCAL[s.dataset.local]}, espaço ${s.dataset.pos}${total > 1 ? ` · ×${fmt(total)}` : ""}</span>
-      <span style="margin-left:auto;display:flex;gap:8px">
+      <span class="muted">${LOCAL[s.dataset.local]}, espaço ${Number(s.dataset.pos) + 1}${total > 1 ? ` · ×${fmt(total)}` : ""}</span>
+      <span style="display:flex;gap:6px;margin-left:auto">
         ${total > 1 ? `<input id="rmQtd" type="number" min="1" max="${total}" value="${total}" style="width:90px">` : ""}
         <button class="btn sec danger" id="rmGo" ${r.online ? "disabled" : ""}>Tirar</button>
         <button class="btn sec" id="rmX">×</button></span>`;
-    $("rmX").onclick = () => { bar.hidden = true; s.classList.remove("sel"); };
+    // Posiciona junto do item (abaixo; acima se nao couber), dentro da janela
+    const rs = s.getBoundingClientRect(), rb = bar.getBoundingClientRect();
+    const top = rs.bottom + 6 + rb.height > innerHeight ? rs.top - rb.height - 6 : rs.bottom + 6;
+    bar.style.left = `${Math.max(8, Math.min(rs.left, innerWidth - rb.width - 8))}px`;
+    bar.style.top = `${Math.max(8, top)}px`;
+    $("rmQtd")?.focus();
+    $("rmX").onclick = fecharSel;
     $("rmGo").onclick = async () => {
       const count = total > 1 ? Number($("rmQtd").value) : 1;
       if (!Number.isInteger(count) || count < 1 || count > total) return msg(null, `Quantidade de 1 a ${total}.`, false);
