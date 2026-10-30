@@ -524,8 +524,12 @@ async function loadRole(id, silencioso = false) {
         <button class="btn sec danger" data-act="mute" title="Usa os minutos; 0 desfaz (não testado)">Mute</button>
         <button class="btn sec danger" data-act="ban" title="Usa os minutos; 0 desfaz (não testado)">Ban</button>
       </div>
-      <h3>Backups</h3>${r.backups.length ? `<div class="row" style="margin-top:0"><select id="bk" style="flex:1">${r.backups.map((b) => `<option>${esc(b)}</option>`).join("")}</select>
-        <button class="btn sec danger" id="restore" ${r.online ? "disabled" : ""}>Restaurar</button></div>` : '<p class="muted">nenhum</p>'}
+      <h3>Backups</h3>
+      <div class="row" style="margin-top:0">${r.backups.length ? `<select id="bk" style="flex:1;min-width:0">${r.backups.map((b) =>
+        `<option value="${esc(b.file)}">${esc([b.quando, b.motivo, b.nivel && `Nv ${b.nivel}`, b.gold !== undefined && `${fmt(b.gold)} gold`,
+          b.itens !== undefined && `${b.itens} itens`].filter(Boolean).join(" · "))}</option>`).join("")}</select>
+        <button class="btn sec danger" id="restore" ${r.online ? "disabled" : ""}>Restaurar</button>` : '<span class="muted" style="flex:1">nenhum</span>'}
+        <button class="btn sec" id="snap" title="Guarda o estado atual sem mudar nada">Backup agora</button></div>
       </section>
      </div>
      <div class="dcol">
@@ -745,9 +749,16 @@ async function loadRole(id, silencioso = false) {
     try { await api(`/api/role/${id}/mail`, body); msg($("liveMsg"), "Correio enviado.", true); }
     catch (e) { msg($("liveMsg"), e.message, false); }
   };
+  $("snap").onclick = async () => {
+    const nota = prompt("Nota do backup (opcional):", "");
+    if (nota === null) return;
+    try { await api(`/api/role/${id}/snapshot`, { nota }); await loadRole(id); msg(null, "Backup criado.", true); }
+    catch (e) { msg(null, e.message, false); }
+  };
   const rb = $("restore");
   if (rb) rb.onclick = async () => {
-    if (!confirm(`Restaurar ${$("bk").value}? O estado atual vira um backup novo.`)) return;
+    if (!confirm(`Restaurar "${$("bk").selectedOptions[0].text}"?
+O estado atual vira um backup novo.`)) return;
     try { await api(`/api/role/${id}/restore`, { backup: $("bk").value }); await loadRole(id); msg($("saveMsg"), "Restaurado.", true); }
     catch (e) { msg($("saveMsg"), e.message, false); }
   };

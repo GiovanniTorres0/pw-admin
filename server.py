@@ -647,6 +647,103 @@ def list_backups(roleid):
     return sorted((f for f in os.listdir(CFG["backup_dir"]) if f.startswith(prefix)), reverse=True)
 
 
+# Descricao dos backups: o motivo vem do audit.log (acao que gerou o backup) e o resumo vem do
+# proprio arquivo (nivel, gold, itens). Arquivos nao mudam, entao o resumo fica em cache.
+BACKUPS_LISTADOS = 50
+ROTULOS = {"status.level": "nível", "status.exp": "XP", "status.sp": "SP", "status.pp": "pontos",
+           "status.hp": "HP", "status.mp": "MP", "status.reputation": "reputação",
+           "pocket.money": "gold da bolsa", "storehouse.money": "gold do banco",
+           "pocket.capacity": "espaços da bolsa", "storehouse.capacity": "espaços do banco",
+           "pets.capacity": "espaços de mascotes", "status.worldtag": "posição", "status.posx": "posição",
+           "status.posy": "posição", "status.posz": "posição"}
+_motivos = {"chave": None, "mapa": {}}
+_resumos = {}
+
+
+def _data_backup(nome):
+    """1024_20261030_030838.bin -> '30/10 03:08'."""
+    try:
+        d, h = nome.rsplit(".", 1)[0].split("_")[1:3]
+        return f"{d[6:8]}/{d[4:6]} {h[:2]}:{h[2:4]}"
+    except (ValueError, IndexError):
+        return nome
+
+
+def _motivos_backup():
+    try:
+        st = os.stat(CFG["audit_log"])
+    except FileNotFoundError:
+        return {}
+    if _motivos["chave"] != (st.st_mtime, st.st_size):
+        mapa = {}
+        with open(CFG["audit_log"], encoding="utf-8") as f:
+            for linha in f:
+                try:
+                    e = json.loads(linha)
+                except ValueError:
+                    continue
+                arq = e.get("backup") or e.get("safety_backup")
+                if arq:
+                    mapa[os.path.basename(arq)] = e
+        _motivos.update(chave=(st.st_mtime, st.st_size), mapa=mapa)
+    return _motivos["mapa"]
+
+
+def _motivo(e):
+    if not e:
+        return ""
+    a = e.get("action")
+    nome = lambda: ITENS.get(str(e.get("item_id")), {}).get("nome") or f"#{e.get('item_id')}"
+    if a == "edit_role":
+        campos = []
+        for k in e.get("changes", {}):
+            r = "atributos" if k.startswith("attr.") else ROTULOS.get(k, k)
+            if r not in campos:
+                campos.append(r)
+        return "antes de editar " + ", ".join(campos[:4]) + ("…" if len(campos) > 4 else "")
+    if a == "add_item":
+        return f"antes de colocar {nome()} ×{e.get('count', 1)}"
+    if a == "remove_item":
+        return f"antes de tirar {nome()} ×{e.get('count', 1)}"
+    if a == "restore_role":
+        return f"antes de restaurar {_data_backup(e.get('source', ''))}"
+    if a == "snapshot":
+        return "manual" + (f": {e['nota']}" if e.get("nota") else "")
+    return a or ""
+
+
+def _resumo(nome):
+    if nome not in _resumos:
+        try:
+            with open(os.path.join(CFG["backup_dir"], nome), "rb") as f:
+                role = p.decode(p.GRoleData, p.Reader(f.read()))
+            pk, sh = role["pocket"], role["storehouse"]
+            _resumos[nome] = {"nivel": role["status"]["level"], "gold": pk["money"] + sh["money"],
+                              "itens": len(pk["items"]) + len(sh["items"]) + len(role["equipment"]["inv"])}
+        except Exception:  # noqa: BLE001 - arquivo antigo ou corrompido: lista sem resumo
+            _resumos[nome] = {}
+    return _resumos[nome]
+
+
+def backups_json(roleid):
+    motivos = _motivos_backup()
+    return [{"file": f, "quando": _data_backup(f), "motivo": _motivo(motivos.get(f))} | _resumo(f)
+            for f in list_backups(roleid)[:BACKUPS_LISTADOS]]
+
+
+def snapshot_role(roleid, body):
+    """Backup manual (nao altera o personagem). Com o jogador online, guarda o ultimo salvamento do jogo."""
+    nota = str(body.get("nota", ""))[:60]
+    _, raw = p.get_role(GAMEDB, roleid)
+    backup = os.path.join(CFG["backup_dir"], f"{roleid}_{time.strftime('%Y%m%d_%H%M%S')}.bin")
+    if os.path.exists(backup):
+        raise ValueError("já existe um backup deste segundo; tente de novo")
+    with open(backup, "wb") as f:
+        f.write(raw)
+    audit("snapshot", roleid=roleid, nota=nota, backup=os.path.basename(backup))
+    return {"ok": True, "backup": os.path.basename(backup)}
+
+
 def restore_role(roleid, filename):
     if filename not in list_backups(roleid):
         raise ValueError("backup nao encontrado")
@@ -847,7 +944,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                         "em_jogo": role["base"]["id"] in (em_jogo() or {})})
             if len(parts) == 3 and parts[:2] == ["api", "role"]:
                 role, raw = p.get_role(GAMEDB, int(parts[2]))
-                return self._send(200, role_json(role) | {"backups": list_backups(int(parts[2])),
+                return self._send(200, role_json(role) | {"backups": backups_json(int(parts[2])),
                                                           "versao": hashlib.sha1(raw).hexdigest()[:16],
                                                           "account": nome_conta(role["base"]["userid"])})
             return self._send(404, {"error": "nao encontrado"})
@@ -881,6 +978,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._send(200, add_item(int(parts[2]), body))
             if len(parts) == 4 and parts[:2] == ["api", "role"] and parts[3] == "removeitem":
                 return self._send(200, remove_item(int(parts[2]), body))
+            if len(parts) == 4 and parts[:2] == ["api", "role"] and parts[3] == "snapshot":
+                return self._send(200, snapshot_role(int(parts[2]), body))
             if len(parts) == 4 and parts[:2] == ["api", "role"] and parts[3] == "restore":
                 return self._send(200, restore_role(int(parts[2]), str(body.get("backup", ""))))
             if len(parts) == 4 and parts[:2] == ["api", "role"] and parts[3] in LIVE_ROLE_ACTIONS:
