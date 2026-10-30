@@ -942,6 +942,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._send(200, {"v": hashlib.sha1(raw).hexdigest()[:16],
                                         "online": uid in online_userids(),
                                         "em_jogo": role["base"]["id"] in (em_jogo() or {})})
+            if len(parts) == 4 and parts[:2] == ["api", "role"] and parts[3] == "backup":
+                # Ver um backup sem restaurar: mesmo formato do personagem, so leitura
+                rid = int(parts[2])
+                nome = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("file", [""])[0]
+                if nome not in list_backups(rid):
+                    return self._send(404, {"error": "backup nao encontrado"})
+                with open(os.path.join(CFG["backup_dir"], nome), "rb") as f:
+                    role = p.decode(p.GRoleData, p.Reader(f.read()))
+                return self._send(200, role_json(role) | {"backups": backups_json(rid), "backup": nome,
+                                                          "account": nome_conta(role["base"]["userid"])})
             if len(parts) == 3 and parts[:2] == ["api", "role"]:
                 role, raw = p.get_role(GAMEDB, int(parts[2]))
                 return self._send(200, role_json(role) | {"backups": backups_json(int(parts[2])),

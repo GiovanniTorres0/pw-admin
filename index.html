@@ -103,6 +103,11 @@
   #mItemInfo { min-height:0; margin-top:8px; }
   .selbar[hidden] { display:none; }
   .invh { border-top:1px solid var(--line); margin-top:12px; padding-top:10px; }
+  .bkbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:10px 14px; border-radius:12px;
+           border:1px solid var(--warn); background:color-mix(in srgb, var(--warn) 12%, var(--card)); }
+  .bkbar > span { flex:1; min-width:0; }
+  .slot.dif { outline:2px solid var(--warn); outline-offset:1px; }
+  #detail input.dif { border-color:var(--warn); color:var(--warn); }
   .invh.first { border-top:0; margin-top:0; padding-top:0; }
   .sec .eq:first-of-type { margin-top:10px; }
   h3.tog { cursor:pointer; user-select:none; }
@@ -384,7 +389,7 @@ document.addEventListener("keydown", (e) => {
 let VERSAO = null;
 // Ocupado = edicao pendente (campos do Salvar), correio em digitacao, caixa de adicionar ou
 // item selecionado abertos, ou cursor num campo do personagem.
-const ocupado = () => document.querySelector("dialog[open], #selBar:not([hidden]), #detail input.changed")
+const ocupado = () => VENDO || document.querySelector("dialog[open], #selBar:not([hidden]), #detail input.changed")
   || $("aiBox") && !$("aiBox").hidden
   || ["mText", "mMoney", "mItem"].some((k) => $(k)?.value)
   || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) && $("detail").contains(document.activeElement);
@@ -426,7 +431,7 @@ function invGrid(items, local, cap) {
   const n = Math.max(cap || 0, ...items.map((i) => i.pos + 1));
   if (!n) return '<p class="muted">vazio</p>';
   return `<div class="slots">${Array.from({ length: n }, (_, pos) =>
-    porPos.has(pos) ? slotHtml(porPos.get(pos), local) : '<div class="slot vazio"></div>').join("")}</div>`;
+    porPos.has(pos) ? slotHtml(porPos.get(pos), local) : `<div class="slot vazio" data-local="${local}" data-pos="${pos}"></div>`).join("")}</div>`;
 }
 // Espacos do equipado (EQUIP_INDEX_* do gs, item.h). Os extras so aparecem se tiverem item.
 const EQUIP = [[0, "Arma"], [1, "Elmo"], [2, "Colar"], [3, "Capa"], [4, "Armadura"], [5, "Cinto"], [6, "Calça"],
@@ -437,7 +442,7 @@ const EXTRAS = { 17: "Runa", 18: "Tomo", 19: "Megafone", 20: "Amuleto HP", 21: "
   36: "Carta", 37: "Carta", 38: "Astrolábio" };
 function equipGrid(items) {
   const porPos = new Map(items.map((i) => [i.pos, i]));
-  const cel = ([pos, nome]) => `<div class="eqc">${porPos.has(pos) ? slotHtml(porPos.get(pos), "equipment") : '<div class="slot vazio"></div>'}<span>${nome}</span></div>`;
+  const cel = ([pos, nome]) => `<div class="eqc">${porPos.has(pos) ? slotHtml(porPos.get(pos), "equipment") : `<div class="slot vazio" data-local="equipment" data-pos="${pos}"></div>`}<span>${nome}</span></div>`;
   const extras = items.filter((i) => !EQUIP.some(([p]) => p === i.pos) && !MODA.some(([p]) => p === i.pos)).map((i) => [i.pos, EXTRAS[i.pos] || `#${i.pos}`]);
   return `<div class="eq">${EQUIP.map(cel).join("")}</div>
     <div class="eqsub muted">Moda</div><div class="eq">${MODA.map(cel).join("")}</div>
@@ -467,22 +472,65 @@ function ligarSecoes(d) {
     };
   });
 }
+// Ver backup: tudo so leitura, faixa no topo, e destaque do que difere do estado atual
+function modoBackup(d, r, id, file) {
+  const listas = (x) => ({ pocket: x.pocket.items, storehouse: x.storehouse.items, equipment: x.equipment, pets: x.pets?.items,
+    dress: x.dress?.items, material: x.material?.items, generalcard: x.generalcard?.items, task: x.task_items });
+  const chave = (x) => {
+    const m = new Map();
+    for (const [loc, itens] of Object.entries(listas(x))) for (const i of itens || []) m.set(`${loc}:${i.pos}`, `${i.id}x${i.count}`);
+    return m;
+  };
+  const agora = ATUAL && ATUAL.id === r.id ? chave(ATUAL) : null, antes = chave(r);
+  let difs = 0;
+  if (agora) d.querySelectorAll(".slot[data-local]").forEach((s) => {
+    const k = `${s.dataset.local}:${s.dataset.pos}`;
+    if ((antes.get(k) || "") !== (agora.get(k) || "")) { s.classList.add("dif"); difs++; }
+  });
+  if (agora) d.querySelectorAll("input[data-k]").forEach((i) => {
+    const [sec, f] = i.dataset.k.split(".");
+    const atual = sec === "attr" ? ATUAL.atributos?.[f] : sec === "pets" ? ATUAL.pets?.[f] : ATUAL[sec]?.[f];
+    if (atual !== undefined && String(atual) !== i.value) { i.classList.add("dif"); i.title = `Atual: ${fmt(atual)}`; difs++; }
+  });
+  d.querySelectorAll("input, textarea, button, select").forEach((el) => { if (el.id !== "bk") el.disabled = true; });
+  d.querySelectorAll(".slot").forEach((s) => s.onclick = null);
+  const desc = $("bk")?.selectedOptions[0]?.text || file;
+  d.insertAdjacentHTML("afterbegin", `<div class="bkbar"><span>Backup <strong>${esc(desc)}</strong>
+    <span class="muted">· só leitura · ${agora ? (difs ? `${difs} diferença${difs > 1 ? "s" : ""} do atual em destaque` : "igual ao atual") : ""}</span></span>
+    <button class="btn sec danger" id="bkRest" ${ATUAL?.online ? "disabled" : ""}>Restaurar este</button>
+    <button class="btn" id="bkSair">Voltar ao atual</button></div>`);
+  $("bk").value = file;
+  $("bk").onchange = () => loadRole(id, false, $("bk").value);
+  $("bkSair").onclick = () => loadRole(id);
+  $("bkRest").onclick = async () => {
+    if (!confirm(`Restaurar "${desc}"?
+O estado atual vira um backup novo.`)) return;
+    try { await api(`/api/role/${id}/restore`, { backup: file }); await loadRole(id); msg(null, "Restaurado.", true); }
+    catch (e) { msg(null, e.message, false); }
+  };
+}
 // silencioso: atualizacao automatica, sem "Carregando" e mantendo a rolagem das colunas
-async function loadRole(id, silencioso = false) {
+// backup: nome do arquivo para ver um backup (so leitura, com o que mudou destacado)
+let ATUAL = null, VENDO = null;
+async function loadRole(id, silencioso = false, backup = null) {
   selected = id;
   document.querySelectorAll(".role").forEach((b) => b.classList.toggle("sel", Number(b.dataset.id) === id));
   const d = $("detail");
   const rolagem = silencioso ? [...d.querySelectorAll(".dcol")].map((c) => c.scrollTop) : null;
   if (!silencioso) { d.innerHTML = '<div class="card muted">Carregando…</div>'; VERSAO = null; }
   let r;
-  try { r = await api(`/api/role/${id}`); } catch (e) {
+  try { r = await api(backup ? `/api/role/${id}/backup?file=${encodeURIComponent(backup)}` : `/api/role/${id}`); } catch (e) {
     if (!silencioso) d.innerHTML = `<div class="card"><div class="msg bad">${esc(e.message)}</div></div>`;
     return;
   }
   if (id !== selected) return;
   TIPS = []; tip.hidden = true;
-  VERSAO = { v: r.versao, online: r.online, em_jogo: r.em_jogo };
-  if (!silencioso) lembrar(r);
+  VENDO = backup;
+  if (!backup) {
+    ATUAL = r;
+    VERSAO = { v: r.versao, online: r.online, em_jogo: r.em_jogo };
+    if (!silencioso) lembrar(r);
+  }
   const val = (k) => { const [s, f] = k.split("."); return s === "attr" ? r.atributos[f] : r[s][f]; };
   const input = ([k, label]) => `<label>${label}<input data-k="${k}" data-v="${val(k)}" value="${val(k)}"></label>`;
   d.innerHTML = `
@@ -528,6 +576,7 @@ async function loadRole(id, silencioso = false) {
       <div class="row" style="margin-top:0">${r.backups.length ? `<select id="bk" style="flex:1;min-width:0">${r.backups.map((b) =>
         `<option value="${esc(b.file)}">${esc([b.quando, b.motivo, b.nivel && `Nv ${b.nivel}`, b.gold !== undefined && `${fmt(b.gold)} gold`,
           b.itens !== undefined && `${b.itens} itens`].filter(Boolean).join(" · "))}</option>`).join("")}</select>
+        <button class="btn sec" id="bkVer" title="Ver o que o personagem tinha, sem restaurar">Ver</button>
         <button class="btn sec danger" id="restore" ${r.online ? "disabled" : ""}>Restaurar</button>` : '<span class="muted" style="flex:1">nenhum</span>'}
         <button class="btn sec" id="snap" title="Guarda o estado atual sem mudar nada">Backup agora</button></div>
       </section>
@@ -762,6 +811,9 @@ O estado atual vira um backup novo.`)) return;
     try { await api(`/api/role/${id}/restore`, { backup: $("bk").value }); await loadRole(id); msg($("saveMsg"), "Restaurado.", true); }
     catch (e) { msg($("saveMsg"), e.message, false); }
   };
+  const bv = $("bkVer");
+  if (bv) bv.onclick = () => loadRole(id, false, $("bk").value);
+  if (backup) modoBackup(d, r, id, backup);
 }
 
 // Catalogo: clicar num item preenche o campo que abriu o catalogo (correio ou bolsa).
