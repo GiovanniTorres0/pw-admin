@@ -1,0 +1,122 @@
+{
+ "0": {
+  "vit_hp": 15,
+  "eng_mp": 9,
+  "lvl_hp": 30,
+  "lvl_mp": 18,
+  "lvl_dmg": 1.0,
+  "lvl_magic": 0.0,
+  "lvl_defense": 0.0,
+  "lvl_resistance": 0.0
+ },
+ "1": {
+  "vit_hp": 10,
+  "eng_mp": 14,
+  "lvl_hp": 20,
+  "lvl_mp": 28,
+  "lvl_dmg": 0.20000000298023224,
+  "lvl_magic": 1.0,
+  "lvl_defense": 0.0,
+  "lvl_resistance": 0.0
+ },
+ "2": {
+  "vit_hp": 10,
+  "eng_mp": 14,
+  "lvl_hp": 20,
+  "lvl_mp": 28,
+  "lvl_dmg": 0.20000000298023224,
+  "lvl_magic": 1.0,
+  "lvl_defense": 0.0,
+  "lvl_resistance": 0.0
+ },
+ "3": {
+  "vit_hp": 12,
+  "eng_mp": 12,
+  "lvl_hp": 24,
+  "lvl_mp": 24,
+  "lvl_dmg": 0.6000000238418579,
+  "lvl_magic": 0.6000000238418579,
+  "lvl_defense": 0.0,
+  "lvl_resistance": 0.0
+ },
+ "4": {
+  "vit_hp": 17,
+  "eng_mp": 7,
+  "lvl_hp": 34,
+  "lvl_mp": 14,
+  "lvl_dmg": 1.0,
+  "lvl_magic": 0.0,
+  "lvl_defense": 0.0,
+  "lvl_resistance": 0.0
+ },
+ "5": {
+  "vit_hp": 13,
+  "eng_mp": 10,
+  "lvl_hp": 26,
+  "lvl_mp": 22,
+  "lvl_dmg": 1.0,
+  "lvl_magic": 0.0,
+  "lvl_defense": 0.0,
+  "lvl_resistance": 0.0
+ },
+ "6": {
+  "vit_hp": 13,
+  "eng_mp": 11,
+  "lvl_hp": 26,
+  "lvl_mp": 22,
+  "lvl_dmg": 1.0,
+  "lvl_magic": 0.0,
+  "lvl_defense": 0.0,
+  "lvl_resistance": 0.0
+ },
+ "7": {
+  "vit_hp": 10,
+  "eng_mp": 14,
+  "lvl_hp": 20,
+  "lvl_mp": 28,
+  "lvl_dmg": 0.20000000298023224,
+  "lvl_magic": 1.0,
+  "lvl_defense": 0.0,
+  "lvl_resistance": 0.0
+ },
+ "8": {
+  "vit_hp": 15,
+  "eng_mp": 9,
+  "lvl_hp": 30,
+  "lvl_mp": 18,
+  "lvl_dmg": 1.0,
+  "lvl_magic": 0.0,
+  "lvl_defense": 0.0,
+  "lvl_resistance": 0.0
+ },
+ "9": {
+  "vit_hp": 10,
+  "eng_mp": 14,
+  "lvl_hp": 20,
+  "lvl_mp": 28,
+  "lvl_dmg": 0.20000000298023224,
+  "lvl_magic": 1.0,
+  "lvl_defense": 0.0,
+  "lvl_resistance": 0.0
+ },
+ "10": {
+  "vit_hp": 13,
+  "eng_mp": 11,
+  "lvl_hp": 26,
+  "lvl_mp": 22,
+  "lvl_dmg": 1.0,
+  "lvl_magic": 0.0,
+  "lvl_defense": 0.0,
+  "lvl_resistance": 0.0
+ },
+ "11": {
+  "vit_hp": 10,
+  "eng_mp": 14,
+  "lvl_hp": 20,
+  "lvl_mp": 28,
+  "lvl_dmg": 0.20000000298023224,
+  "lvl_magic": 1.0,
+  "lvl_defense": 0.0,
+  "lvl_resistance": 0.0
+ }
+}

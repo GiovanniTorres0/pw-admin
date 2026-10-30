@@ -1,0 +1,13 @@
+[Unit]
+Description=PW Admin (painel do Perfect World, so em 127.0.0.1)
+After=network.target mariadb.service
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/pwpanel
+ExecStart=/usr/bin/python3 -I /home/ubuntu/pwpanel/server.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

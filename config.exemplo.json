@@ -1,0 +1,9 @@
+{
+  "bind": "127.0.0.1",
+  "port": 8080,
+  "gamedbd": ["127.0.0.1", 29400],
+  "gdeliveryd": ["127.0.0.1", 29100],
+  "db": {"host": "localhost", "user": "pw", "password": "TROQUE_AQUI", "database": "pw"},
+  "backup_dir": "backups",
+  "audit_log": "audit.log"
+}

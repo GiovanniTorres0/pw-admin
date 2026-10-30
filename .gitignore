@@ -1,0 +1,82 @@
+# =====================================================================
+# PW Admin — o que NUNCA vai para o repositorio (ele e publico)
+# =====================================================================
+
+# --- Segredos e configuracao local ------------------------------------
+# config.json tem o hash da senha do painel, usuario/senha do MariaDB e
+# os IPs internos do servidor. Use config.exemplo.json como modelo.
+config.json
+config.json.*
+!config.exemplo.json
+*.env
+.env*
+*.pem
+*.key
+*.ppk
+id_rsa*
+id_ed25519*
+*.p12
+*.pfx
+secrets*
+credentials*
+
+# --- Dados de jogadores --------------------------------------------------
+# Copias binarias de personagens, log de auditoria e saida do painel.
+backups/
+backup/
+backup-*/
+*.bin
+audit.log
+*.log
+panel.out
+nohup.out
+*.sql
+*.sql.gz
+*.tgz
+*.tar
+*.tar.gz
+*.zip
+*.rar
+*.7z
+
+# --- Arquivos do jogo (propriedade da Perfect World / Wanmei) ------------
+# Sao extraidos do SEU cliente/servidor com os scripts de tools/ (ver README).
+itens.json
+dados/*
+!dados/classes.json
+!dados/item_desc_indices.json
+*.data
+*.pck
+*.pkx
+*.dds
+*.sev
+elements*
+gshop*
+tasks*
+
+# --- Notas privadas da instalacao ----------------------------------------
+NOTAS-LOCAIS.md
+CONTINUACAO.md
+*.local.md
+*.bak
+*.orig
+*.original*
+
+# --- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Editores e sistema ------------------------------------------------------
+.vscode/
+.idea/
+.claude/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini

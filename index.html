@@ -1,0 +1,648 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PW Admin</title>
+<style>
+  :root { --bg:#f3f4f7; --card:#fff; --fg:#161b26; --muted:#6b7385; --line:#e3e6ec; --soft:#f7f8fa;
+          --accent:#3563e9; --ok:#1f8a4c; --warn:#b26b00; --bad:#c23b3b; --shadow:0 1px 2px rgba(16,24,40,.06); }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1218; --card:#171b23; --fg:#e8eaf0; --muted:#8f98ab; --line:#262c38; --soft:#1d222c;
+            --accent:#7aa2ff; --ok:#4cc27e; --warn:#e0a040; --bad:#ff6b6b; --shadow:none; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--fg); }
+  header { position:sticky; top:0; z-index:5; padding:10px 20px; display:flex; gap:10px; align-items:center;
+           background:color-mix(in srgb, var(--card) 88%, transparent); backdrop-filter:blur(8px); border-bottom:1px solid var(--line); }
+  header h1 { font-size:15px; margin:0; font-weight:650; }
+  main { display:grid; grid-template-columns:300px minmax(0,1fr); gap:16px; padding:16px 20px; max-width:1400px; margin:0 auto; }
+  main > div { display:flex; flex-direction:column; gap:16px; }
+  @media (max-width:800px) { main { grid-template-columns:1fr; padding:12px; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; box-shadow:var(--shadow); }
+  .acc { padding:10px 0; border-bottom:1px solid var(--line); }
+  .acc:first-child { padding-top:0; }
+  .acc:last-child { border-bottom:0; padding-bottom:0; }
+  .role { display:flex; justify-content:space-between; width:100%; text-align:left; margin:6px 0 0; padding:7px 10px; border-radius:8px;
+          border:1px solid transparent; background:var(--soft); color:var(--fg); font:inherit; cursor:pointer; transition:border-color .12s; }
+  .role:hover { border-color:var(--line); }
+  .role.sel { border-color:var(--accent); background:color-mix(in srgb, var(--accent) 10%, var(--card)); }
+  .tag { font-size:11px; padding:1px 7px; border-radius:10px; border:1px solid var(--line); color:var(--muted); vertical-align:middle; }
+  .tag.on { color:var(--ok); border-color:var(--ok); }
+  .tag.gm { color:var(--warn); border-color:var(--warn); }
+  .muted { color:var(--muted); }
+  h2 { font-size:15px; margin:0 0 10px; font-weight:650; }
+  #detail h2 { font-size:18px; margin-bottom:2px; }
+  h3 { font-size:12px; margin:22px 0 10px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted);
+       text-transform:uppercase; letter-spacing:.06em; font-weight:600; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; }
+  label { display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--muted); }
+  input, select { font:inherit; padding:7px 9px; border:1px solid var(--line); border-radius:8px; background:var(--soft); color:var(--fg);
+                  transition:border-color .12s, box-shadow .12s; min-width:0; }
+  input:focus, select:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent); }
+  input.changed { border-color:var(--accent); background:color-mix(in srgb, var(--accent) 7%, var(--soft)); }
+  button.btn { font:inherit; font-weight:550; padding:7px 14px; border-radius:8px; border:1px solid var(--accent);
+               background:var(--accent); color:#fff; cursor:pointer; transition:filter .12s, background .12s; }
+  button.btn:hover { filter:brightness(1.08); }
+  button.btn.sec { background:transparent; color:var(--accent); border-color:var(--line); }
+  button.btn.sec:hover { border-color:var(--accent); background:color-mix(in srgb, var(--accent) 8%, transparent); }
+  button.btn:disabled { opacity:.45; cursor:not-allowed; filter:none; }
+  button.btn.danger { background:var(--bad); border-color:var(--bad); color:#fff; }
+  button.btn.sec.danger { background:transparent; color:var(--bad); border-color:var(--line); }
+  button.btn.sec.danger:hover { border-color:var(--bad); background:color-mix(in srgb, var(--bad) 8%, transparent); }
+  header { height:52px; }
+  /* Lateral: busca + contas recolhiveis */
+  #accSearch { width:100%; margin-bottom:10px; }
+  details.acc summary { list-style:none; cursor:pointer; display:flex; gap:6px; align-items:center; padding:2px 0; }
+  details.acc summary::-webkit-details-marker { display:none; }
+  details.acc summary::before { content:"›"; color:var(--muted); width:10px; transition:transform .12s; }
+  details.acc[open] summary::before { transform:rotate(90deg); }
+  .role .muted { font-size:12px; }
+  /* Tela cheia: lateral | dados | inventario, cada coluna rola sozinha se precisar */
+  main { max-width:none; height:calc(100vh - 52px); padding:12px 16px; gap:12px; grid-template-columns:220px minmax(0,1fr); }
+  main > div { min-height:0; }
+  main > div > .card { height:100%; overflow:auto; }
+  #detail { display:flex; flex-direction:column; gap:12px; min-height:0; }
+  .card { padding:12px 14px; }
+  .rhead { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:10px 14px; box-shadow:var(--shadow); }
+  .rtop { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .rtop h2 { margin:0; }
+  .rtop .acts { margin-left:auto; display:flex; gap:8px; align-items:center; }
+  .dgrid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.1fr); gap:12px; flex:1; min-height:0; }
+  .dcol { display:flex; flex-direction:column; gap:12px; overflow:auto; min-height:0; }
+  #detail h3 { margin:12px 0 8px; padding-top:10px; }
+  #detail .card > h3:first-child { margin-top:0; padding-top:0; border-top:0; }
+  #detail .grid { grid-template-columns:repeat(auto-fill,minmax(118px,1fr)); gap:8px; }
+  #detail input, #detail select { padding:5px 8px; }
+  #detail .row { margin-top:8px; }
+  #detail .grid.g4 { grid-template-columns:repeat(4,minmax(0,1fr)); }
+  #detail .grid.g5 { grid-template-columns:repeat(5,minmax(0,1fr)); }
+  .mail { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .mail input { flex:1; min-width:80px; }
+  .mail input[style*="width"] { flex:none; min-width:0; }
+  #mItemInfo:empty { display:none; }
+  #mItemInfo { min-height:0; margin-top:8px; }
+  .selbar[hidden] { display:none; }
+  .invh { border-top:1px solid var(--line); margin-top:12px; padding-top:10px; }
+  #detail .invh h3 { border:0; margin:0; padding:0; }
+  #detail h3 + .row, #detail .mail + .row { margin-top:8px; }
+  @media (max-width:1100px) {
+    main { height:auto; } main > div > .card { height:auto; max-height:40vh; }
+    .dgrid { grid-template-columns:1fr; } .dcol { overflow:visible; }
+  }
+  /* Inventario em grade, como no jogo */
+  .slots { display:grid; grid-template-columns:repeat(auto-fill,40px); gap:4px; }
+  .slot { width:40px; height:40px; padding:3px; border:1px solid var(--line); border-radius:6px; background:var(--soft);
+          position:relative; cursor:pointer; }
+  .slot.vazio { cursor:default; opacity:.45; }
+  .slot:not(.vazio):hover { border-color:var(--accent); }
+  .slot.sel { outline:2px solid var(--accent); outline-offset:1px; }
+  .slot b { position:absolute; right:3px; bottom:1px; font-size:10px; font-weight:600; color:#fff; text-shadow:0 0 3px #000, 0 0 2px #000; }
+  .invh { display:flex; align-items:center; gap:8px; }
+  .invh h3 { flex:1; }
+  .selbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:12px; padding:8px 10px; border-radius:8px; background:var(--soft); }
+  .addbox { margin-top:10px; padding:12px; border:1px dashed var(--line); border-radius:8px; }
+  /* Aviso flutuante unico */
+  #toast { position:fixed; left:50%; bottom:20px; transform:translateX(-50%); z-index:30; max-width:min(560px, calc(100vw - 32px));
+           padding:10px 16px; border-radius:10px; font-size:13px; color:#fff; box-shadow:0 6px 24px rgba(0,0,0,.25); }
+  #toast.ok { background:#1f7a45; } #toast.bad { background:#b33434; }
+  dialog.mini { width:min(440px, calc(100vw - 32px)); padding:16px; border:1px solid var(--line); border-radius:12px;
+                background:var(--card); color:var(--fg); }
+  dialog.mini::backdrop { background:rgba(0,0,0,.45); }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th { font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  th, td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); }
+  tr:last-child td { border-bottom:0; }
+  .msg { margin-top:10px; padding:8px 12px; border-radius:8px; display:none; font-size:13px; }
+  .msg.ok { display:block; color:var(--ok); background:color-mix(in srgb, var(--ok) 10%, transparent); }
+  .msg.bad { display:block; color:var(--bad); background:color-mix(in srgb, var(--bad) 10%, transparent); }
+  #login { max-width:340px; margin:12vh auto; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:12px; }
+  .ico { display:inline-block; width:32px; height:32px; vertical-align:middle; border-radius:6px; background:var(--line); }
+  td.ic { width:44px; }
+  tr[data-tip] { cursor:default; }
+  tr[data-tip]:hover td { background:color-mix(in srgb, var(--accent) 7%, transparent); }
+  /* Dica no estilo do cliente: fundo escuro sempre, porque as cores ^RRGGBB do jogo sao para fundo escuro. */
+  #tip { position:fixed; z-index:10; max-width:320px; padding:8px 10px; border-radius:6px; pointer-events:none;
+         background:rgba(12,14,20,.96); border:1px solid #3a4152; color:#fff; font-size:12px; line-height:1.5;
+         box-shadow:0 4px 16px rgba(0,0,0,.35); }
+  #tip div:first-child { font-weight:600; }
+  #mItemInfo { display:flex; gap:6px; align-items:center; min-height:32px; }
+  dialog#cat { width:min(960px, calc(100vw - 32px)); max-height:calc(100vh - 32px); padding:0; border:1px solid var(--line);
+               border-radius:12px; background:var(--card); color:var(--fg); }
+  dialog#cat::backdrop { background:rgba(0,0,0,.45); }
+  .cat-head { display:flex; gap:8px; align-items:center; padding:12px; border-bottom:1px solid var(--line); }
+  .cat-body { display:grid; grid-template-columns:200px 1fr; min-height:0; height:min(640px, calc(100vh - 110px)); }
+  @media (max-width:700px) { .cat-body { grid-template-columns:1fr; } #catList { display:none; } }
+  #catList { border-right:1px solid var(--line); overflow:auto; padding:6px; }
+  #catList button { display:flex; justify-content:space-between; width:100%; padding:6px 8px; border:0; border-radius:6px;
+                    background:transparent; color:var(--fg); font:inherit; text-align:left; cursor:pointer; }
+  #catList button.sel, #catList button:hover { background:color-mix(in srgb, var(--accent) 14%, transparent); }
+  #catItems { overflow:auto; padding:10px; }
+  .tiles { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:6px; }
+  .tile { display:flex; gap:6px; align-items:center; padding:4px; border:1px solid var(--line); border-radius:6px;
+          background:transparent; color:var(--fg); font:inherit; font-size:12px; text-align:left; cursor:pointer; min-width:0; }
+  .tile:hover { border-color:var(--accent); }
+  .tile span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+</style>
+</head>
+<body>
+<div id="login" class="card" hidden>
+  <h2>PW Admin</h2>
+  <form id="loginForm" class="row">
+    <input id="pw" type="password" placeholder="Senha do painel" autofocus style="flex:1">
+    <button class="btn">Entrar</button>
+  </form>
+  <div id="loginMsg" class="msg"></div>
+</div>
+
+<div id="app" hidden>
+  <header><h1>PW Admin</h1><span class="muted">PW Teste · v156</span>
+    <button class="btn sec" id="openSrv" style="margin-left:auto">Servidor</button>
+    <button class="btn sec" id="openCat">Catálogo</button>
+    <button class="btn sec" id="reload" title="Atualizar">↻</button></header>
+  <main>
+    <div>
+      <section class="card"><input id="accSearch" placeholder="Buscar conta ou personagem">
+        <div id="accounts" class="muted">Carregando…</div></section>
+    </div>
+    <section id="detail"><div class="card muted">Escolha um personagem.</div></section>
+  </main>
+</div>
+
+<dialog id="srv" class="mini">
+  <div class="row" style="margin:0 0 4px"><h2 style="margin:0;flex:1">Servidor</h2><button class="btn sec" id="srvClose">Fechar</button></div>
+  <h3>Aviso global</h3>
+  <form id="bcForm" class="row" style="margin-top:0">
+    <input id="bcText" maxlength="200" placeholder="Mensagem para todos online" style="flex:1">
+    <button class="btn">Enviar</button>
+  </form>
+  <h3>Dar cash</h3>
+  <form id="cashForm" class="row" style="margin-top:0">
+    <select id="cashUser" style="flex:1"></select>
+    <input id="cashVal" type="number" min="1" max="100000" placeholder="Cash" style="width:100px">
+    <button class="btn">Dar</button>
+  </form>
+</dialog>
+<div id="toast" hidden></div>
+
+<dialog id="cat">
+  <div class="cat-head">
+    <strong>Catálogo de itens</strong>
+    <select id="catSel" aria-label="Categoria"></select>
+    <input id="catQ" placeholder="Buscar por nome ou ID" style="flex:1">
+    <button class="btn sec" id="catClose">Fechar</button>
+  </div>
+  <div class="cat-body">
+    <nav id="catList"></nav>
+    <div id="catItems"><p class="muted">Carregando…</p></div>
+  </div>
+</dialog>
+
+<script>
+const api = async (path, body) => {
+  const opt = body === undefined ? {} :
+    { method: "POST", headers: { "Content-Type": "application/json", "X-PWAdmin": "1" }, body: JSON.stringify(body) };
+  const r = await fetch(path, opt);
+  const data = await r.json().catch(() => ({}));
+  if (r.status === 401) { show("login"); throw new Error("login necessario"); }
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data;
+};
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+const fmt = (n) => Number(n).toLocaleString("pt-BR");
+const date = (t) => t ? new Date(t * 1000).toLocaleString("pt-BR") : "—";
+function show(which) { $("login").hidden = which !== "login"; $("app").hidden = which !== "app"; }
+let toastTimer;
+function msg(_el, text, ok) {
+  const t = $("toast");
+  t.textContent = text; t.className = ok ? "ok" : "bad"; t.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.hidden = true, ok ? 3500 : 8000);
+}
+// Folha de icones: um PNG so (/api/icones.png), recortado por CSS. Enquanto o mapa nao chega,
+// cai no PNG por item.
+let ICONES = null;
+async function loadIcones() { try { ICONES = await api("/api/icones.json"); } catch { ICONES = null; } }
+const icon = (id) => {
+  if (!ICONES) return `<img class="ico" src="/api/icone/${Number(id)}.png" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
+  const n = ICONES.celulas[String(Number(id))];
+  if (n === undefined) return `<span class="ico" style="visibility:hidden"></span>`;
+  const x = (n % ICONES.colunas) * ICONES.largura, y = Math.floor(n / ICONES.colunas) * ICONES.altura;
+  return `<span class="ico" style="background:url(/api/icones.png?v=${ICONES.versao}) -${x}px -${y}px"></span>`;
+};
+
+// Linhas da dica com os codigos de cor ^RRGGBB do cliente.
+function colorize(line) {
+  let out = "", color = "ffffff";
+  for (const part of String(line).split(/(\^[0-9a-fA-F]{6})/)) {
+    if (/^\^[0-9a-fA-F]{6}$/.test(part)) color = part.slice(1);
+    else if (part) out += `<span style="color:#${color}">${esc(part)}</span>`;
+  }
+  return `<div>${out || "&nbsp;"}</div>`;
+}
+let TIPS = [];
+const tip = document.createElement("div");
+tip.id = "tip"; tip.hidden = true; document.body.appendChild(tip);
+document.addEventListener("mouseover", (e) => {
+  const tr = e.target.closest && e.target.closest("[data-tip]");
+  if (!tr) { tip.hidden = true; return; }
+  tip.innerHTML = TIPS[Number(tr.dataset.tip)].map(colorize).join("");
+  tip.hidden = false;
+});
+document.addEventListener("mousemove", (e) => {
+  if (tip.hidden) return;
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  tip.style.left = Math.min(e.clientX + 14, innerWidth - w - 8) + "px";
+  tip.style.top = (e.clientY + 14 + h > innerHeight ? e.clientY - h - 10 : e.clientY + 14) + "px";
+});
+
+let selected = null;
+
+$("loginForm").onsubmit = async (e) => {
+  e.preventDefault();
+  try { await api("/api/login", { password: $("pw").value }); show("app"); await loadIcones(); loadAccounts(); }
+  catch (err) { const m = $("loginMsg"); m.textContent = err.message; m.className = "msg bad"; }
+};
+$("reload").onclick = () => { loadAccounts(); if (selected) loadRole(selected); };
+$("openSrv").onclick = () => $("srv").showModal();
+$("srvClose").onclick = () => $("srv").close();
+$("bcForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const text = $("bcText").value.trim();
+  if (!text) return;
+  try { await api("/api/broadcast", { text }); $("bcText").value = ""; msg($("bcMsg"), `Enviado: ${text}`, true); }
+  catch (err) { msg($("bcMsg"), err.message, false); }
+};
+
+$("cashForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const sel = $("cashUser"), cash = Number($("cashVal").value);
+  if (!cash) return;
+  const nome = sel.options[sel.selectedIndex].text;
+  if (!confirm(`Enviar ${cash} de cash para ${nome}?`)) return;
+  try {
+    const r = await api("/api/cash", { userid: Number(sel.value), cash });
+    $("cashVal").value = "";
+    msg($("cashMsg"), `${cash} de cash enviado para ${nome}. ${r.online ? "Está online: precisa voltar à tela de login e entrar de novo para ver." : "Aparece no próximo login."}`, true);
+  } catch (err) { msg($("cashMsg"), err.message, false); }
+};
+
+async function loadAccounts() {
+  const accs = await api("/api/accounts");
+  show("app");
+  const cu = $("cashUser"), atual = cu.value;
+  cu.innerHTML = accs.map((a) => `<option value="${a.id}">${esc(a.name)} #${a.id}</option>`).join("");
+  if (atual) cu.value = atual;
+  ACCS = accs;
+  renderAccounts();
+}
+let ACCS = [];
+function renderAccounts() {
+  const q = $("accSearch").value.trim().toLowerCase();
+  const lista = ACCS.filter((a) => !q || a.name.toLowerCase().includes(q) || a.roles.some((r) => r.name.toLowerCase().includes(q)));
+  $("accounts").innerHTML = lista.length ? lista.map((a) => {
+    const aberta = q || a.roles.some((r) => r.id === selected) || ACCS.length <= 5;
+    return `<details class="acc" ${aberta ? "open" : ""}>
+      <summary><strong>${esc(a.name)}</strong> <span class="muted">#${a.id}</span>
+        ${a.online ? '<span class="tag on">online</span>' : ""} ${a.gm ? '<span class="tag gm">GM</span>' : ""}</summary>
+      ${a.roles.length ? a.roles.map((r) => `<button class="role ${r.id === selected ? "sel" : ""}" data-id="${r.id}">${esc(r.name)} <span class="muted">#${r.id}</span></button>`).join("")
+                       : '<div class="muted" style="margin:4px 0 0 16px">sem personagens</div>'}
+    </details>`;
+  }).join("") : '<p class="muted">Nada encontrado.</p>';
+  document.querySelectorAll(".role").forEach((b) => b.onclick = () => loadRole(Number(b.dataset.id)));
+}
+$("accSearch").oninput = renderAccounts;
+
+const FIELDS = [
+  ["status.level", "Nível"], ["status.exp", "XP"], ["status.sp", "SP (espírito)"],
+  ["status.hp", "HP"], ["status.mp", "MP"], ["status.reputation", "Reputação"],
+  ["pocket.money", "Gold na bolsa"], ["storehouse.money", "Gold no banco"],
+];
+// Atributos base (status.property). Os pontos livres acompanham: tirar de um atributo devolve
+// o ponto, e cada nivel a mais da 5 pontos, como no jogo.
+const ATTRS = [["attr.vit", "Constituição"], ["attr.eng", "Inteligência"], ["attr.str", "Força"], ["attr.agi", "Destreza"]];
+// Ponto de retorno de Cidade do Dragao (532, 643 no jogo), do world/precinct.sev do servidor.
+const CIDADE = { "status.worldtag": 1, "status.posx": 1327, "status.posy": 220, "status.posz": 935 };
+
+// Grade de espacos como no jogo; cap = capacidade (vazios aparecem apagados). Equipado nao tem cap.
+function invGrid(items, local, cap) {
+  const porPos = new Map(items.map((i) => [i.pos, i]));
+  const n = cap || items.length;
+  if (!n) return '<p class="muted">vazio</p>';
+  const posicoes = cap ? Array.from({ length: cap }, (_, k) => k) : items.map((i) => i.pos);
+  return `<div class="slots">${posicoes.map((pos) => {
+    const i = porPos.get(pos);
+    if (!i) return '<div class="slot vazio"></div>';
+    return `<div class="slot" data-tip="${TIPS.push(i.dica) - 1}" data-local="${local}" data-pos="${i.pos}" data-id="${i.id}"
+      data-count="${i.count}" data-nome="${esc(i.nome || "#" + i.id)}">${icon(i.id)}${i.count > 1 ? `<b>${fmt(i.count)}</b>` : ""}</div>`;
+  }).join("")}</div>`;
+}
+
+async function loadRole(id) {
+  selected = id;
+  document.querySelectorAll(".role").forEach((b) => b.classList.toggle("sel", Number(b.dataset.id) === id));
+  const d = $("detail");
+  d.innerHTML = '<div class="card muted">Carregando…</div>';
+  let r;
+  TIPS = []; tip.hidden = true;
+  try { r = await api(`/api/role/${id}`); } catch (e) { d.innerHTML = `<div class="card"><div class="msg bad">${esc(e.message)}</div></div>`; return; }
+  const val = (k) => { const [s, f] = k.split("."); return s === "attr" ? r.atributos[f] : r[s][f]; };
+  const input = ([k, label]) => `<label>${label}<input data-k="${k}" data-v="${val(k)}" value="${val(k)}"></label>`;
+  d.innerHTML = `
+    <div class="rhead">
+      <div class="rtop">
+        <h2>${esc(r.name)}</h2>
+        <span class="tag">Nv ${r.status.level}</span><span class="muted">${r.cls_name} · conta #${r.userid}</span>
+        ${r.online ? '<span class="tag on">online · só leitura</span>' : ""}
+        <div class="acts"><span id="pend" class="muted"></span>
+          <button class="btn" id="save" ${r.online ? "disabled" : ""} title="Faz backup antes de gravar">Salvar</button></div>
+      </div>
+    </div>
+
+    <div class="dgrid">
+     <div class="dcol">
+      <section class="card"><h3>Personagem</h3>
+      <div class="grid g4">${FIELDS.map(input).join("")}</div>
+      <div class="row" style="margin-top:16px">
+        <button class="btn sec" id="toCity" ${r.online ? "disabled" : ""} title="Para quem ficou preso">Mandar para a cidade</button>
+        <span class="muted" style="margin-left:auto;font-size:12px">último login ${date(r.lastlogin_time)}</span>
+      </div>
+      </section>
+      <section class="card"><h3>Atributos</h3>
+      ${r.atributos ? `
+      ${r.atributos.desatualizado ? '<div class="msg bad" style="display:block;margin:0 0 12px">Status base desatualizado para o nível: salve para recalcular.</div>' : ""}
+      <div class="grid g5">${ATTRS.map(input).join("")}${input(["status.pp", "Pontos livres"])}</div>
+      <div class="row"><span id="ptsInfo" class="muted"></span>
+        <button class="btn sec" type="button" id="ptsAll">Dar todos os pontos do nível</button></div>
+      <div id="prev" class="muted" style="margin-top:6px"></div>`
+      : `<div class="grid">${input(["status.pp", "Pontos de atributo"])}</div>`}
+      </section>
+      <section class="card"><h3>Moderação</h3>
+      <div class="mail">
+        <input id="lvReason" maxlength="100" placeholder="Motivo (opcional)" style="flex:2">
+        <input id="lvMin" type="number" min="0" value="10" title="Minutos (0 = desfazer)" style="width:70px"><span class="muted">min</span>
+        <button class="btn sec" data-act="kick" title="Derruba sem bloquear">Kick</button>
+        <button class="btn sec danger" data-act="mute" title="Usa os minutos; 0 desfaz (não testado)">Mute</button>
+        <button class="btn sec danger" data-act="ban" title="Usa os minutos; 0 desfaz (não testado)">Ban</button>
+      </div>
+      <h3>Backups</h3>${r.backups.length ? `<div class="row" style="margin-top:0"><select id="bk" style="flex:1">${r.backups.map((b) => `<option>${esc(b)}</option>`).join("")}</select>
+        <button class="btn sec danger" id="restore" ${r.online ? "disabled" : ""}>Restaurar</button></div>` : '<p class="muted">nenhum</p>'}
+      </section>
+     </div>
+     <div class="dcol">
+      <section class="card">
+      <h3>Equipado</h3>${invGrid(r.equipment, "equipment", 0)}
+      <div class="invh"><h3>Bolsa · ${r.pocket.items.length}/${r.pocket.capacity}</h3>
+        <button class="btn sec" id="aiToggle" ${r.online ? "disabled" : ""}>+ Adicionar</button></div>
+      <div class="addbox" id="aiBox" hidden>
+        <div class="grid">
+          <label>Item (ID)<input id="aiItem" type="number" min="0" value="0"></label>
+          <label>&nbsp;<button class="btn sec" type="button" id="aiPick">Catálogo…</button></label>
+          <label>Quantidade<input id="aiCount" type="number" min="1" value="1"></label>
+          <label id="aiSockL" style="display:none">Engastes<input id="aiSock" type="number" min="0" value="0"></label>
+        </div>
+        <div id="aiItemInfo" class="muted" style="margin-top:8px"></div>
+        <div class="row"><button class="btn" id="aiAdd">Colocar na bolsa</button></div>
+      </div>
+      <div style="margin-top:10px">${invGrid(r.pocket.items, "pocket", r.pocket.capacity)}</div>
+      <h3>Banco · ${r.storehouse.items.length}/${r.storehouse.capacity}</h3>${invGrid(r.storehouse.items, "storehouse", r.storehouse.capacity)}
+      <div class="selbar" id="selBar" hidden></div>
+      </section>
+      <section class="card"><h3>Correio</h3>
+      <div class="mail">
+        <input id="mTitle" maxlength="20" value="Presente do GM" title="Título" placeholder="Título">
+        <input id="mMoney" type="number" min="0" placeholder="Gold" title="Gold">
+        <input id="mItem" type="number" min="0" placeholder="Item (ID)" title="Item (ID, opcional)">
+        <input id="mCount" type="number" min="1" value="1" title="Quantidade" style="width:70px">
+        <button class="btn sec" type="button" id="mPick">Catálogo…</button>
+      </div>
+      <div id="mItemInfo" class="muted"></div>
+      <div class="row"><input id="mText" maxlength="200" placeholder="Texto (opcional)" style="flex:1"><button class="btn" id="mSend">Enviar</button></div>
+      </section>
+     </div>
+    </div>`;
+  // Salvar so fica ativo com mudanca (ou com status base para recalcular)
+  const pend = () => {
+    const n = d.querySelectorAll("input.changed").length;
+    $("pend").textContent = n ? `${n} alteração${n > 1 ? "ões" : ""}` : "";
+    $("save").disabled = r.online || (!n && !r.atributos?.desatualizado);
+  };
+  d.oninput = () => setTimeout(pend);
+  $("ptsAll")?.addEventListener("click", () => setTimeout(pend));
+  pend();
+  d.querySelectorAll("input[data-k]").forEach((i) => i.oninput = () => i.classList.toggle("changed", i.value !== i.dataset.v));
+  if (r.atributos) {
+    const g = r.crescimento, field = (k) => d.querySelector(`input[data-k="${k}"]`), num = (k) => Number(field(k).value) || 0;
+    const setv = (k, v) => { const i = field(k); i.value = v; i.classList.toggle("changed", i.value !== i.dataset.v); };
+    // Normal do jogo: 5 em cada atributo no nivel 1 e 5 pontos por nivel. O servidor aceita ate 30 a mais.
+    const total = (lvl) => (lvl - 1) * 5 + 20, limite = (lvl) => total(lvl) + 30;
+    const porNivel = (f, lvl) => Math.trunc(Math.fround(lvl * f));
+    const preview = () => {
+      const lvl = num("status.level"), usados = ATTRS.reduce((t, [k]) => t + num(k), 0) + num("status.pp");
+      const info = $("ptsInfo");
+      info.textContent = `Pontos usados: ${fmt(usados)} de ${fmt(total(lvl))} do nível`
+        + (usados > limite(lvl) ? ` (passou do limite do servidor, ${fmt(limite(lvl))})` : usados > total(lvl) ? " (acima do normal, mas o servidor aceita)" : "");
+      info.style.color = usados > limite(lvl) ? "#e66" : "";
+      if (!g) return;
+      const base = (f) => 1 + porNivel(f, lvl) - porNivel(f, 1);
+      $("prev").textContent = `Ao salvar, status base (sem equipamento): HP ${fmt(g.vit_hp * num("attr.vit") + g.lvl_hp * (lvl - 1))}`
+        + ` · MP ${fmt(g.eng_mp * num("attr.eng") + g.lvl_mp * (lvl - 1))} · dano ${base(g.lvl_dmg)}`
+        + ` · magia ${base(g.lvl_magic)} · defesa ${base(g.lvl_defense)}`;
+    };
+    // Mudou um atributo: os pontos livres pagam a diferenca. Mudou o nivel: 5 pontos por nivel.
+    const seguir = (k, porUnidade) => {
+      const i = field(k); i.dataset.prev = i.value;
+      i.addEventListener("input", () => {
+        const delta = (Number(i.value) || 0) - (Number(i.dataset.prev) || 0);
+        i.dataset.prev = i.value;
+        setv("status.pp", num("status.pp") + porUnidade * delta);
+        preview();
+      });
+    };
+    ATTRS.forEach(([k]) => seguir(k, -1));
+    seguir("status.level", 5);
+    field("status.pp").addEventListener("input", preview);
+    $("ptsAll").onclick = () => {
+      setv("status.pp", total(num("status.level")) - ATTRS.reduce((t, [k]) => t + num(k), 0));
+      preview();
+    };
+    preview();
+  }
+  $("save").onclick = async () => {
+    const changes = {};
+    d.querySelectorAll("input.changed").forEach((i) => changes[i.dataset.k] = i.value);
+    if (r.atributos) {
+      const ruins = ATTRS.filter(([k]) => k in changes).filter(([k]) => {
+        const v = Number(changes[k]);
+        return !Number.isInteger(v) || v < 5 || v > 9999;
+      });
+      d.querySelectorAll("input[data-k^='attr.']").forEach((i) => i.style.outline = "");
+      if (ruins.length) {
+        ruins.forEach(([k]) => d.querySelector(`input[data-k="${k}"]`).style.outline = "2px solid #e66");
+        return msg($("saveMsg"), `${ruins.map(([k, l]) => `${l} = ${changes[k] === "" ? "(vazio)" : changes[k]}`).join(", ")}: `
+          + "use um valor entre 5 e 9999.", false);
+      }
+      const pp = Number(changes["status.pp"] ?? r.status.pp);
+      if (pp < 0) return msg($("saveMsg"), `Pontos livres negativos (${pp}): tire de algum atributo ou suba o nível.`, false);
+    }
+    if (!Object.keys(changes).length && !r.atributos?.desatualizado) return msg($("saveMsg"), "Nada mudou.", false);
+    try {
+      const res = await api(`/api/role/${id}/edit`, { changes });
+      await loadRole(id);
+      msg($("saveMsg"), `Salvo: ${Object.keys(res.applied).join(", ")}. Backup: ${res.backup}`, true);
+    } catch (e) { msg($("saveMsg"), e.message, false); }
+  };
+  $("toCity").onclick = async () => {
+    if (!confirm(`Mandar ${r.name} para Cidade do Dragão?`)) return;
+    try {
+      await api(`/api/role/${id}/edit`, { changes: CIDADE });
+      await loadRole(id);
+      msg($("saveMsg"), "Enviado para Cidade do Dragão.", true);
+    } catch (e) { msg($("saveMsg"), e.message, false); }
+  };
+  const LOCAL = { equipment: "Equipado", pocket: "Bolsa", storehouse: "Banco" };
+  d.querySelectorAll(".slot:not(.vazio)").forEach((s) => s.onclick = () => {
+    d.querySelectorAll(".slot.sel").forEach((x) => x.classList.remove("sel"));
+    s.classList.add("sel");
+    const total = Number(s.dataset.count), bar = $("selBar");
+    bar.hidden = false;
+    bar.innerHTML = `${icon(s.dataset.id)} <strong>${s.dataset.nome}</strong>
+      <span class="muted">#${s.dataset.id} · ${LOCAL[s.dataset.local]}, espaço ${s.dataset.pos}${total > 1 ? ` · ×${fmt(total)}` : ""}</span>
+      <span style="margin-left:auto;display:flex;gap:8px">
+        ${total > 1 ? `<input id="rmQtd" type="number" min="1" max="${total}" value="${total}" style="width:90px">` : ""}
+        <button class="btn sec danger" id="rmGo" ${r.online ? "disabled" : ""}>Tirar</button>
+        <button class="btn sec" id="rmX">×</button></span>`;
+    $("rmX").onclick = () => { bar.hidden = true; s.classList.remove("sel"); };
+    $("rmGo").onclick = async () => {
+      const count = total > 1 ? Number($("rmQtd").value) : 1;
+      if (!Number.isInteger(count) || count < 1 || count > total) return msg(null, `Quantidade de 1 a ${total}.`, false);
+      if (!confirm(`Tirar ${count > 1 ? count + "× " : ""}${s.dataset.nome} de ${r.name}?`)) return;
+      try {
+        await api(`/api/role/${id}/removeitem`, { local: s.dataset.local, pos: Number(s.dataset.pos), item_id: Number(s.dataset.id), count });
+        await loadRole(id);
+        msg(null, `Tirado: ${count}× ${s.dataset.nome}.`, true);
+      } catch (e) { msg(null, e.message, false); }
+    };
+  });
+  $("aiToggle").onclick = () => { const b = $("aiBox"); b.hidden = !b.hidden; if (!b.hidden) $("aiItem").focus(); };
+  const LABEL = { kick: "Kick", mute: "Mute", ban: "Ban" };
+  d.querySelectorAll("button[data-act]").forEach((b) => b.onclick = async () => {
+    const act = b.dataset.act, minutes = Number($("lvMin").value || 0);
+    const what = act === "kick" ? `Derrubar ${r.name}?`
+      : minutes ? `${LABEL[act]} em ${r.name} por ${minutes} min?` : `Desfazer ${LABEL[act].toLowerCase()} de ${r.name}?`;
+    if (!confirm(what)) return;
+    try {
+      await api(`/api/role/${id}/${act}`, { minutes, reason: $("lvReason").value });
+      msg($("liveMsg"), `${LABEL[act]}: feito.`, true);
+    } catch (e) { msg($("liveMsg"), e.message, false); }
+  });
+  // Campo de ID de item (correio "m" e bolsa "ai"): mostra icone, nome e pilha enquanto digita.
+  const ligarBusca = (pre, depois) => {
+    let lookup = 0;
+    $(`${pre}Pick`).onclick = () => openCatalog(`${pre}Item`).catch((e) => alert(e.message));
+    $(`${pre}Item`).oninput = () => {
+      const tid = Number($(`${pre}Item`).value || 0), n = ++lookup, info = $(`${pre}ItemInfo`);
+      if (!tid) { info.innerHTML = ""; if (depois) depois(null); return; }
+      setTimeout(async () => {
+        if (n !== lookup) return;
+        try {
+          const it = await api(`/api/item/${tid}`);
+          if (n !== lookup) return;
+          $(`${pre}Count`).max = it.pilha || 9999;
+          info.innerHTML = `<span data-tip="${TIPS.push(it.dica) - 1}" style="display:flex;gap:6px;align-items:center">${icon(tid)}
+            <strong style="color:var(--fg)">${esc(it.nome)}</strong></span> pilha máxima ${fmt(it.pilha || 1)}`;
+          if (depois) depois(it);
+        } catch (e) { if (n === lookup) info.textContent = e.message; }
+      }, 250);
+    };
+  };
+  ligarBusca("m");
+  ligarBusca("ai", (it) => {
+    const eq = it?.criar?.equipamento;
+    $("aiSockL").style.display = eq ? "" : "none";
+    $("aiSock").max = it?.criar?.engastes || 0;
+    if (eq) $("aiCount").value = 1;
+    if (it && !it.criar?.pode) $("aiItemInfo").insertAdjacentHTML("beforeend",
+      '<div class="msg bad" style="display:block">Este tipo de item ainda não pode ser criado pelo painel: o jogo descartaria o item sem os dados dele.</div>');
+    else if (eq) $("aiItemInfo").insertAdjacentHTML("beforeend", ` · equipamento, até ${it.criar.engastes} engastes`);
+  });
+  $("aiAdd").onclick = async () => {
+    const body = { item_id: Number($("aiItem").value || 0), count: Number($("aiCount").value || 1),
+                   engastes: Number($("aiSock").value || 0) };
+    if (!body.item_id) return msg($("aiMsg"), "Escolha um item.", false);
+    try {
+      const res = await api(`/api/role/${id}/additem`, body);
+      await loadRole(id);
+      msg($("aiMsg"), `${res.nome} colocado no espaço ${res.pos} da bolsa. Backup: ${res.backup}`, true);
+    } catch (e) { msg($("aiMsg"), e.message, false); }
+  };
+  $("mSend").onclick = async () => {
+    const body = { title: $("mTitle").value, text: $("mText").value, money: Number($("mMoney").value || 0),
+                   item_id: Number($("mItem").value || 0), count: Number($("mCount").value || 1) };
+    if (!confirm(`Enviar correio para ${r.name}?`)) return;
+    try { await api(`/api/role/${id}/mail`, body); msg($("liveMsg"), "Correio enviado.", true); }
+    catch (e) { msg($("liveMsg"), e.message, false); }
+  };
+  const rb = $("restore");
+  if (rb) rb.onclick = async () => {
+    if (!confirm(`Restaurar ${$("bk").value}? O estado atual vira um backup novo.`)) return;
+    try { await api(`/api/role/${id}/restore`, { backup: $("bk").value }); await loadRole(id); msg($("saveMsg"), "Restaurado.", true); }
+    catch (e) { msg($("saveMsg"), e.message, false); }
+  };
+}
+
+// Catalogo: clicar num item preenche o campo que abriu o catalogo (correio ou bolsa).
+let catState = { cat: "", q: "", page: 0 }, catLoaded = false, catSeq = 0;
+let catTarget = "mItem";  // campo que recebe o item escolhido
+async function openCatalog(target = "mItem") {
+  catTarget = target;
+  $("cat").appendChild(tip);  // o dialog modal fica acima da pagina; a dica precisa estar dentro dele
+  $("cat").showModal();
+  if (!catLoaded) {
+    const cats = await api("/api/categorias");
+    catState.cat = cats[0].id;
+    $("catList").innerHTML = cats.map((c) => `<button data-cat="${c.id}">${esc(c.nome)} <span class="muted">${fmt(c.total)}</span></button>`).join("");
+    $("catSel").innerHTML = `<option value="">Todas (busca)</option>` + cats.map((c) => `<option value="${c.id}">${esc(c.nome)} (${fmt(c.total)})</option>`).join("");
+    $("catList").querySelectorAll("button").forEach((b) => b.onclick = () => { catState = { cat: b.dataset.cat, q: $("catQ").value, page: 0 }; loadCatalog(); });
+    catLoaded = true;
+  }
+  loadCatalog();
+}
+async function loadCatalog() {
+  const n = ++catSeq, box = $("catItems");
+  $("catSel").value = catState.cat;
+  $("catList").querySelectorAll("button").forEach((b) => b.classList.toggle("sel", b.dataset.cat === catState.cat));
+  if (!catState.cat && !catState.q) { box.innerHTML = '<p class="muted">Digite um nome ou ID para buscar em todas as categorias.</p>'; return; }
+  const qs = new URLSearchParams({ cat: catState.cat, q: catState.q, page: catState.page });
+  let res;
+  try { res = await api(`/api/itens?${qs}`); } catch (e) { box.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; return; }
+  if (n !== catSeq) return;
+  const pages = Math.max(1, Math.ceil(res.total / res.per_page));
+  const nav = `<div class="row" style="margin:0 0 8px"><span class="muted">${fmt(res.total)} itens · página ${res.page + 1} de ${pages}</span>
+    <button class="btn sec" data-p="-1" ${res.page ? "" : "disabled"}>Anterior</button>
+    <button class="btn sec" data-p="1" ${res.page + 1 < pages ? "" : "disabled"}>Próxima</button></div>`;
+  box.innerHTML = nav + (res.items.length ? `<div class="tiles">${res.items.map((i) =>
+    `<button class="tile" data-id="${i.id}" data-tip="${TIPS.push(i.dica) - 1}">${icon(i.id)}<span>${esc(i.nome)}<br><span class="muted">#${i.id}</span></span></button>`).join("")}</div>`
+    : '<p class="muted">Nada encontrado.</p>');
+  box.scrollTop = 0;
+  box.querySelectorAll("button[data-p]").forEach((b) => b.onclick = () => { catState.page += Number(b.dataset.p); loadCatalog(); });
+  box.querySelectorAll(".tile").forEach((b) => b.onclick = () => {
+    const field = $(catTarget);
+    if (!field) { alert(`Item #${b.dataset.id}. Abra um personagem para mandar por correio ou pôr na bolsa.`); return; }
+    field.value = b.dataset.id; field.oninput();
+    $("cat").close(); tip.hidden = true;
+    field.scrollIntoView({ behavior: "smooth", block: "center" });
+  });
+}
+let catTimer;
+$("catQ").oninput = () => { clearTimeout(catTimer); catTimer = setTimeout(() => { catState.q = $("catQ").value.trim(); catState.page = 0; loadCatalog(); }, 250); };
+$("catSel").onchange = () => { catState = { cat: $("catSel").value, q: $("catQ").value.trim(), page: 0 }; loadCatalog(); };
+$("openCat").onclick = () => openCatalog().catch((e) => alert(e.message));
+$("catClose").onclick = () => { $("cat").close(); tip.hidden = true; };
+$("cat").addEventListener("close", () => { tip.hidden = true; document.body.appendChild(tip); });
+
+loadIcones().then(() => loadAccounts()).catch(() => show("login"));
+</script>
+</body>
+</html>
