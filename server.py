@@ -53,7 +53,11 @@ EDITABLE = {
     ("status", "reputation"): (0, 2**31 - 1),
     ("pocket", "money"): (0, 2_000_000_000),
     ("storehouse", "money"): (0, 2_000_000_000),
+    # Expansao: o gs le o tamanho daqui no login (userlogin.cpp: bagsize e storesize)
+    ("pocket", "capacity"): (32, 64),
+    ("storehouse", "capacity"): (16, 120),
 }
+EXPANSAO = {"pocket": "Bolsa", "storehouse": "Banco"}
 EDITABLE_POS = {"posx", "posy", "posz", "worldtag"}
 
 # Atributos base: status.property e o extend_prop do gs (cgame/gs/property.h), little-endian,
@@ -282,6 +286,11 @@ def role_json(role):
         "equipment": inv_json(role["equipment"]["inv"]),
         "storehouse": {"capacity": sh["capacity"], "money": sh["money"],
                        "items": inv_json(sh["items"])},
+        # Bancos extras do 1.5.5: moda (size1), materiais (size2) e cartas (size3); itens de missao
+        "dress": {"capacity": sh["size1"], "items": inv_json(sh["dress"])},
+        "material": {"capacity": sh["size2"], "items": inv_json(sh["material"])},
+        "generalcard": {"capacity": sh["size3"], "items": inv_json(sh["generalcard"])},
+        "task_items": inv_json(role["task"]["task_inventory"]),
         "online": b["userid"] in online_userids(),
     }
 
@@ -311,6 +320,13 @@ def edit_role(roleid, changes):
                 value = int(value)
                 if not lo <= value <= hi:
                     raise ValueError(f"{key} fora do intervalo {lo}..{hi}")
+                if field == "capacity":
+                    if value % 8:
+                        raise ValueError(f"{EXPANSAO[section]}: use múltiplos de 8 (uma linha do jogo).")
+                    ultimo = max((i["pos"] + 1 for i in role[section]["items"]), default=0)
+                    if value < ultimo:
+                        raise ValueError(f"{EXPANSAO[section]}: há item no espaço {ultimo}; "
+                                         f"tire-o antes de reduzir para {value}.")
             elif section == "status" and field in EDITABLE_POS:
                 value = int(value) if field == "worldtag" else float(value)
             else:
@@ -404,7 +420,10 @@ def add_item(roleid, body):
 
 
 LOCAIS = {"pocket": lambda r: r["pocket"]["items"], "storehouse": lambda r: r["storehouse"]["items"],
-          "equipment": lambda r: r["equipment"]["inv"]}
+          "equipment": lambda r: r["equipment"]["inv"], "dress": lambda r: r["storehouse"]["dress"],
+          "material": lambda r: r["storehouse"]["material"],
+          "generalcard": lambda r: r["storehouse"]["generalcard"],
+          "task": lambda r: r["task"]["task_inventory"]}
 
 
 def remove_item(roleid, body):

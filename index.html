@@ -51,8 +51,21 @@
   button.btn.sec.danger { background:transparent; color:var(--bad); border-color:var(--line); }
   button.btn.sec.danger:hover { border-color:var(--bad); background:color-mix(in srgb, var(--bad) 8%, transparent); }
   header { height:52px; }
+  .ibtn { border:1px solid var(--line); background:transparent; color:var(--muted); font:inherit; font-size:15px; line-height:1;
+          width:34px; height:34px; border-radius:8px; cursor:pointer; flex:none; }
+  .ibtn:hover { color:var(--fg); border-color:var(--accent); }
+  .sbar { display:flex; gap:6px; margin-bottom:10px; }
+  .sbar input { flex:1; min-width:0; }
+  mark { background:color-mix(in srgb, var(--accent) 28%, transparent); color:inherit; border-radius:3px; padding:0 1px; }
+  .cap { display:flex; align-items:center; gap:4px; font-size:12px; color:var(--muted); margin:0; }
+  #detail label.cap { display:flex; flex-direction:row; align-items:center; gap:4px; margin:0; }
+  #detail .cap input { width:58px; padding:3px 6px; }
+  .gold { font-size:12px; color:var(--warn); white-space:nowrap; }
+  .eq { display:grid; grid-template-columns:repeat(auto-fill,52px); gap:6px 4px; }
+  .eqc { display:flex; flex-direction:column; align-items:center; gap:2px; }
+  .eqc span { font-size:10px; color:var(--muted); white-space:nowrap; }
+  .eqsub { font-size:11px; margin:10px 0 6px; }
   /* Lateral: busca + contas recolhiveis */
-  #accSearch { width:100%; margin-bottom:10px; }
   details.acc summary { list-style:none; cursor:pointer; display:flex; gap:6px; align-items:center; padding:2px 0; }
   details.acc summary::-webkit-details-marker { display:none; }
   details.acc summary::before { content:"›"; color:var(--muted); width:10px; transition:transform .12s; }
@@ -91,7 +104,7 @@
     .dgrid { grid-template-columns:1fr; } .dcol { overflow:visible; }
   }
   /* Inventario em grade, como no jogo */
-  .slots { display:grid; grid-template-columns:repeat(auto-fill,40px); gap:4px; }
+  .slots { display:grid; grid-template-columns:repeat(8,40px); gap:4px; }
   .slot { width:40px; height:40px; padding:3px; border:1px solid var(--line); border-radius:6px; background:var(--soft);
           position:relative; cursor:pointer; }
   .slot.vazio { cursor:default; opacity:.45; }
@@ -158,12 +171,11 @@
 
 <div id="app" hidden>
   <header><h1>PW Admin</h1><span class="muted">PW Teste · v156</span>
-    <button class="btn sec" id="openSrv" style="margin-left:auto">Servidor</button>
-    <button class="btn sec" id="openCat">Catálogo</button>
-    <button class="btn sec" id="reload" title="Atualizar">↻</button></header>
+    <button class="btn sec" id="openSrv" style="margin-left:auto">Aviso global</button></header>
   <main>
     <div>
-      <section class="card"><input id="accSearch" placeholder="Buscar conta ou personagem">
+      <section class="card"><div class="sbar"><input id="accSearch" placeholder="Buscar personagem, conta ou #ID" autocomplete="off">
+        <button class="ibtn" id="reload" title="Atualizar lista e personagem">↻</button></div>
         <div id="accounts" class="muted">Carregando…</div></section>
     </div>
     <section id="detail"><div class="card muted">Escolha um personagem.</div></section>
@@ -171,18 +183,19 @@
 </div>
 
 <dialog id="srv" class="mini">
-  <div class="row" style="margin:0 0 4px"><h2 style="margin:0;flex:1">Servidor</h2><button class="btn sec" id="srvClose">Fechar</button></div>
-  <h3>Aviso global</h3>
+  <div class="row" style="margin:0 0 12px"><h2 style="margin:0;flex:1">Aviso global</h2><button class="ibtn" id="srvClose" title="Fechar">×</button></div>
   <form id="bcForm" class="row" style="margin-top:0">
     <input id="bcText" maxlength="200" placeholder="Mensagem para todos online" style="flex:1">
     <button class="btn">Enviar</button>
   </form>
-  <h3>Dar cash</h3>
+</dialog>
+<dialog id="cashDlg" class="mini">
+  <div class="row" style="margin:0 0 12px"><h2 style="margin:0;flex:1" id="cashTitle">Dar cash</h2><button class="ibtn" id="cashClose" title="Fechar">×</button></div>
   <form id="cashForm" class="row" style="margin-top:0">
-    <select id="cashUser" style="flex:1"></select>
-    <input id="cashVal" type="number" min="1" max="100000" placeholder="Cash" style="width:100px">
+    <input id="cashVal" type="number" min="1" max="100000" placeholder="Quantidade de cash" style="flex:1">
     <button class="btn">Dar</button>
   </form>
+  <div class="muted" style="margin-top:8px;font-size:12px">Vai para a conta inteira. Aparece no próximo login.</div>
 </dialog>
 <div id="toast" hidden></div>
 
@@ -265,8 +278,9 @@ $("loginForm").onsubmit = async (e) => {
   catch (err) { const m = $("loginMsg"); m.textContent = err.message; m.className = "msg bad"; }
 };
 $("reload").onclick = () => { loadAccounts(); if (selected) loadRole(selected); };
-$("openSrv").onclick = () => $("srv").showModal();
+$("openSrv").onclick = () => { $("srv").showModal(); $("bcText").focus(); };
 $("srvClose").onclick = () => $("srv").close();
+$("cashClose").onclick = () => $("cashDlg").close();
 $("bcForm").onsubmit = async (e) => {
   e.preventDefault();
   const text = $("bcText").value.trim();
@@ -275,43 +289,73 @@ $("bcForm").onsubmit = async (e) => {
   catch (err) { msg($("bcMsg"), err.message, false); }
 };
 
+// Cash: aberto pelo botao do personagem, vale para a conta dele
+let CASH_CONTA = null;
+function abrirCash(userid, nome) {
+  CASH_CONTA = { userid, nome };
+  $("cashTitle").textContent = `Dar cash · conta ${nome}`;
+  $("cashVal").value = "";
+  $("cashDlg").showModal(); $("cashVal").focus();
+}
 $("cashForm").onsubmit = async (e) => {
   e.preventDefault();
-  const sel = $("cashUser"), cash = Number($("cashVal").value);
-  if (!cash) return;
-  const nome = sel.options[sel.selectedIndex].text;
-  if (!confirm(`Enviar ${cash} de cash para ${nome}?`)) return;
+  const cash = Number($("cashVal").value);
+  if (!cash || !CASH_CONTA) return;
   try {
-    const r = await api("/api/cash", { userid: Number(sel.value), cash });
-    $("cashVal").value = "";
-    msg($("cashMsg"), `${cash} de cash enviado para ${nome}. ${r.online ? "Está online: precisa voltar à tela de login e entrar de novo para ver." : "Aparece no próximo login."}`, true);
-  } catch (err) { msg($("cashMsg"), err.message, false); }
+    const r = await api("/api/cash", { userid: CASH_CONTA.userid, cash });
+    $("cashDlg").close();
+    msg(null, `${fmt(cash)} de cash para ${CASH_CONTA.nome}. ${r.online ? "Está online: aparece ao relogar." : "Aparece no próximo login."}`, true);
+  } catch (err) { msg(null, err.message, false); }
 };
 
 async function loadAccounts() {
   const accs = await api("/api/accounts");
   show("app");
-  const cu = $("cashUser"), atual = cu.value;
-  cu.innerHTML = accs.map((a) => `<option value="${a.id}">${esc(a.name)} #${a.id}</option>`).join("");
-  if (atual) cu.value = atual;
   ACCS = accs;
   renderAccounts();
 }
 let ACCS = [];
+const marca = (txt, q) => {
+  const t = esc(txt);
+  if (!q) return t;
+  const i = txt.toLowerCase().indexOf(q);
+  return i < 0 ? t : esc(txt.slice(0, i)) + `<mark>${esc(txt.slice(i, i + q.length))}</mark>` + esc(txt.slice(i + q.length));
+};
+const roleBtn = (r, a, q) => `<button class="role ${r.id === selected ? "sel" : ""}" data-id="${r.id}">
+  <span>${marca(r.name, q)}${a ? ` <span class="muted">· ${marca(a.name, q)}</span>` : ""}</span><span class="muted">#${r.id}</span></button>`;
 function renderAccounts() {
-  const q = $("accSearch").value.trim().toLowerCase();
-  const lista = ACCS.filter((a) => !q || a.name.toLowerCase().includes(q) || a.roles.some((r) => r.name.toLowerCase().includes(q)));
-  $("accounts").innerHTML = lista.length ? lista.map((a) => {
-    const aberta = q || a.roles.some((r) => r.id === selected) || ACCS.length <= 5;
-    return `<details class="acc" ${aberta ? "open" : ""}>
-      <summary><strong>${esc(a.name)}</strong> <span class="muted">#${a.id}</span>
-        ${a.online ? '<span class="tag on">online</span>' : ""} ${a.gm ? '<span class="tag gm">GM</span>' : ""}</summary>
-      ${a.roles.length ? a.roles.map((r) => `<button class="role ${r.id === selected ? "sel" : ""}" data-id="${r.id}">${esc(r.name)} <span class="muted">#${r.id}</span></button>`).join("")
-                       : '<div class="muted" style="margin:4px 0 0 16px">sem personagens</div>'}
-    </details>`;
-  }).join("") : '<p class="muted">Nada encontrado.</p>';
-  document.querySelectorAll(".role").forEach((b) => b.onclick = () => loadRole(Number(b.dataset.id)));
+  const bruto = $("accSearch").value.trim().toLowerCase(), q = bruto.replace(/^#/, "");
+  const box = $("accounts");
+  if (q) {
+    // Busca: lista direta de personagens (nome, conta ou ID de personagem/conta)
+    const achados = [];
+    for (const a of ACCS) {
+      const contaBate = a.name.toLowerCase().includes(q) || String(a.id) === q;
+      for (const r of a.roles) if (contaBate || r.name.toLowerCase().includes(q) || String(r.id) === q) achados.push([r, a]);
+    }
+    box.innerHTML = achados.length
+      ? `<div class="muted" style="font-size:12px;margin-bottom:4px">${achados.length} personagem${achados.length > 1 ? "s" : ""} · Enter abre o primeiro</div>`
+        + achados.map(([r, a]) => roleBtn(r, a, q)).join("")
+      : '<p class="muted">Nenhum personagem encontrado.</p>';
+  } else {
+    box.innerHTML = ACCS.map((a) => {
+      const aberta = a.roles.some((r) => r.id === selected) || ACCS.length <= 5;
+      return `<details class="acc" ${aberta ? "open" : ""}>
+        <summary><strong>${esc(a.name)}</strong> <span class="muted">#${a.id}</span>
+          ${a.online ? '<span class="tag on">online</span>' : ""} ${a.gm ? '<span class="tag gm">GM</span>' : ""}</summary>
+        ${a.roles.length ? a.roles.map((r) => roleBtn(r, null, "")).join("") : '<div class="muted" style="margin:4px 0 0 16px">sem personagens</div>'}
+      </details>`;
+    }).join("");
+  }
+  box.querySelectorAll(".role").forEach((b) => b.onclick = () => loadRole(Number(b.dataset.id)));
 }
+$("accSearch").onkeydown = (e) => {
+  if (e.key === "Enter") { const b = $("accounts").querySelector(".role"); if (b) b.click(); }
+  if (e.key === "Escape") { e.target.value = ""; renderAccounts(); }
+};
+document.addEventListener("keydown", (e) => {
+  if (e.key === "/" && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); $("accSearch").focus(); }
+});
 $("accSearch").oninput = renderAccounts;
 
 const FIELDS = [
@@ -325,18 +369,39 @@ const ATTRS = [["attr.vit", "Constituição"], ["attr.eng", "Inteligência"], ["
 // Ponto de retorno de Cidade do Dragao (532, 643 no jogo), do world/precinct.sev do servidor.
 const CIDADE = { "status.worldtag": 1, "status.posx": 1327, "status.posy": 220, "status.posz": 935 };
 
-// Grade de espacos como no jogo; cap = capacidade (vazios aparecem apagados). Equipado nao tem cap.
+// Grade de espacos como no jogo: 8 por linha (bolsa 32 = 4x8, banco 16 = 2x8); vazios apagados.
+const slotHtml = (i, local) => `<div class="slot" data-tip="${TIPS.push(i.dica) - 1}" data-local="${local}" data-pos="${i.pos}" data-id="${i.id}"
+  data-count="${i.count}" data-nome="${esc(i.nome || "#" + i.id)}">${icon(i.id)}${i.count > 1 ? `<b>${fmt(i.count)}</b>` : ""}</div>`;
 function invGrid(items, local, cap) {
   const porPos = new Map(items.map((i) => [i.pos, i]));
-  const n = cap || items.length;
+  const n = Math.max(cap || 0, ...items.map((i) => i.pos + 1));
   if (!n) return '<p class="muted">vazio</p>';
-  const posicoes = cap ? Array.from({ length: cap }, (_, k) => k) : items.map((i) => i.pos);
-  return `<div class="slots">${posicoes.map((pos) => {
-    const i = porPos.get(pos);
-    if (!i) return '<div class="slot vazio"></div>';
-    return `<div class="slot" data-tip="${TIPS.push(i.dica) - 1}" data-local="${local}" data-pos="${i.pos}" data-id="${i.id}"
-      data-count="${i.count}" data-nome="${esc(i.nome || "#" + i.id)}">${icon(i.id)}${i.count > 1 ? `<b>${fmt(i.count)}</b>` : ""}</div>`;
-  }).join("")}</div>`;
+  return `<div class="slots">${Array.from({ length: n }, (_, pos) =>
+    porPos.has(pos) ? slotHtml(porPos.get(pos), local) : '<div class="slot vazio"></div>').join("")}</div>`;
+}
+// Espacos do equipado (EQUIP_INDEX_* do gs, item.h). Os extras so aparecem se tiverem item.
+const EQUIP = [[0, "Arma"], [1, "Elmo"], [2, "Colar"], [3, "Capa"], [4, "Armadura"], [5, "Cinto"], [6, "Calça"],
+  [7, "Botas"], [8, "Pulso"], [9, "Anel"], [10, "Anel"], [11, "Munição"], [12, "Voo"]];
+const MODA = [[25, "Cabeça"], [13, "Roupa"], [14, "Calça"], [15, "Sapato"], [16, "Luva"], [29, "Arma"]];
+const EXTRAS = { 17: "Runa", 18: "Tomo", 19: "Megafone", 20: "Amuleto HP", 21: "Amuleto MP", 22: "Ajuste", 23: "Gênio",
+  24: "Loja", 26: "Facção", 27: "Habilidade", 28: "Habilidade", 32: "Carta", 33: "Carta", 34: "Carta", 35: "Carta",
+  36: "Carta", 37: "Carta", 38: "Astrolábio" };
+function equipGrid(items) {
+  const porPos = new Map(items.map((i) => [i.pos, i]));
+  const cel = ([pos, nome]) => `<div class="eqc">${porPos.has(pos) ? slotHtml(porPos.get(pos), "equipment") : '<div class="slot vazio"></div>'}<span>${nome}</span></div>`;
+  const extras = items.filter((i) => !EQUIP.some(([p]) => p === i.pos) && !MODA.some(([p]) => p === i.pos)).map((i) => [i.pos, EXTRAS[i.pos] || `#${i.pos}`]);
+  return `<div class="eq">${EQUIP.map(cel).join("")}</div>
+    <div class="eqsub muted">Moda</div><div class="eq">${MODA.map(cel).join("")}</div>
+    ${extras.length ? `<div class="eqsub muted">Outros</div><div class="eq">${extras.map(cel).join("")}</div>` : ""}`;
+}
+// Bancos extras e itens de missao: so aparecem quando existem
+function extraInv(r) {
+  const blocos = [["Banco de moda", r.dress, "dress"], ["Banco de materiais", r.material, "material"],
+                  ["Cartas", r.generalcard, "generalcard"]]
+    .filter(([, b]) => b && b.items.length)
+    .map(([t, b, k]) => `<h3>${t} · ${b.items.length}/${b.capacity}</h3>${invGrid(b.items, k, b.capacity)}`);
+  if (r.task_items?.length) blocos.push(`<h3>Itens de missão · ${r.task_items.length}</h3>${invGrid(r.task_items, "task", 0)}`);
+  return blocos.join("");
 }
 
 async function loadRole(id) {
@@ -356,6 +421,7 @@ async function loadRole(id) {
         <span class="tag">Nv ${r.status.level}</span><span class="muted">${r.cls_name} · conta #${r.userid}</span>
         ${r.online ? '<span class="tag on">online · só leitura</span>' : ""}
         <div class="acts"><span id="pend" class="muted"></span>
+          <button class="btn sec" id="cashBtn" title="Dar cash para a conta ${esc(r.account || "#" + r.userid)}">Cash</button>
           <button class="btn" id="save" ${r.online ? "disabled" : ""} title="Faz backup antes de gravar">Salvar</button></div>
       </div>
     </div>
@@ -392,8 +458,8 @@ async function loadRole(id) {
      </div>
      <div class="dcol">
       <section class="card">
-      <h3>Equipado</h3>${invGrid(r.equipment, "equipment", 0)}
-      <div class="invh"><h3>Bolsa · ${r.pocket.items.length}/${r.pocket.capacity}</h3>
+      <h3>Equipado</h3>${equipGrid(r.equipment)}
+      <div class="invh"><h3>Bolsa · ${r.pocket.items.length}/${r.pocket.capacity}</h3><span class="gold">${fmt(r.pocket.money)} gold</span><label class="cap" title="Expansão: 32 a 64, de 8 em 8">Espaços <input data-k="pocket.capacity" data-v="${r.pocket.capacity}" value="${r.pocket.capacity}" type="number" min="32" max="64" step="8"></label>
         <button class="btn sec" id="aiToggle" ${r.online ? "disabled" : ""}>+ Adicionar</button></div>
       <div class="addbox" id="aiBox" hidden>
         <div class="grid">
@@ -406,7 +472,9 @@ async function loadRole(id) {
         <div class="row"><button class="btn" id="aiAdd">Colocar na bolsa</button></div>
       </div>
       <div style="margin-top:10px">${invGrid(r.pocket.items, "pocket", r.pocket.capacity)}</div>
-      <h3>Banco · ${r.storehouse.items.length}/${r.storehouse.capacity}</h3>${invGrid(r.storehouse.items, "storehouse", r.storehouse.capacity)}
+      <div class="invh"><h3>Banco · ${r.storehouse.items.length}/${r.storehouse.capacity}</h3><span class="gold">${fmt(r.storehouse.money)} gold</span><label class="cap" title="Expansão: 16 a 120, de 8 em 8">Espaços <input data-k="storehouse.capacity" data-v="${r.storehouse.capacity}" value="${r.storehouse.capacity}" type="number" min="16" max="120" step="8"></label></div>
+      <div style="margin-top:10px">${invGrid(r.storehouse.items, "storehouse", r.storehouse.capacity)}</div>
+      ${extraInv(r)}
       <div class="selbar" id="selBar" hidden></div>
       </section>
       <section class="card"><h3>Correio</h3>
@@ -501,7 +569,9 @@ async function loadRole(id) {
       msg($("saveMsg"), "Enviado para Cidade do Dragão.", true);
     } catch (e) { msg($("saveMsg"), e.message, false); }
   };
-  const LOCAL = { equipment: "Equipado", pocket: "Bolsa", storehouse: "Banco" };
+  const LOCAL = { equipment: "Equipado", pocket: "Bolsa", storehouse: "Banco", dress: "Banco de moda",
+                  material: "Banco de materiais", generalcard: "Cartas", task: "Itens de missão" };
+  $("cashBtn").onclick = () => abrirCash(r.userid, r.account || `#${r.userid}`);
   d.querySelectorAll(".slot:not(.vazio)").forEach((s) => s.onclick = () => {
     d.querySelectorAll(".slot.sel").forEach((x) => x.classList.remove("sel"));
     s.classList.add("sel");
@@ -638,7 +708,6 @@ async function loadCatalog() {
 let catTimer;
 $("catQ").oninput = () => { clearTimeout(catTimer); catTimer = setTimeout(() => { catState.q = $("catQ").value.trim(); catState.page = 0; loadCatalog(); }, 250); };
 $("catSel").onchange = () => { catState = { cat: $("catSel").value, q: $("catQ").value.trim(), page: 0 }; loadCatalog(); };
-$("openCat").onclick = () => openCatalog().catch((e) => alert(e.message));
 $("catClose").onclick = () => { $("cat").close(); tip.hidden = true; };
 $("cat").addEventListener("close", () => { tip.hidden = true; document.body.appendChild(tip); });
 
