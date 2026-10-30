@@ -710,7 +710,8 @@ def edit_role(roleid, changes):
             section, _, field = key.partition(".")
             if section == "attr":
                 continue
-            if check[section][field] != new:
+            atual = ler_curral(check)[0] if key == "pets.capacity" else check[section][field]
+            if atual != new:
                 raise ValueError(f"gravado, mas {key} voltou diferente; backup em {backup}")
         audit("edit_role", roleid=roleid, name=p.role_name(role), changes=applied, backup=backup)
         return {"applied": applied, "backup": os.path.basename(backup)}
