@@ -419,7 +419,6 @@ def gm_userids():
 INDICE_COMPLETO = 6 * 3600
 INDICE_TICK = 60
 BUSCA_MAX = 30
-ONLINE_MAX = 50
 _indice = {}  # userid -> {"name": conta, "roles": [(roleid, nome)]}
 _indice_lock = threading.Lock()
 
@@ -521,21 +520,9 @@ def buscar(q):
 
 
 def lista_online():
-    """Personagens em jogo agora. Sem o gdeliveryd, cai para as contas online e todos os personagens delas."""
-    gms, jogo = gm_userids(), em_jogo()
-    if jogo is not None:
-        nomes = sorted(jogo.items(), key=lambda x: x[1][1].lower())
-        return {"total": len(nomes), "itens": [{"id": rid, "name": nome, "userid": uid, "account": nome_conta(uid),
-                                                "online": True, "gm": uid in gms} for rid, (uid, nome) in nomes[:ONLINE_MAX]]}
-    out = []
-    for uid in sorted(online_userids()):
-        with _indice_lock:
-            c = _indice.get(uid)
-        conta = c["name"] if c else nome_conta(uid)
-        roles = c["roles"] if c else _reler_conta(uid, conta)
-        out += [{"id": rid, "name": nome, "userid": uid, "account": conta, "online": True, "gm": uid in gms}
-                for rid, nome in roles]
-    return {"total": len(out), "itens": out[:ONLINE_MAX]}
+    """So o total: o GM acha o jogador pela busca."""
+    jogo = em_jogo()
+    return {"total": len(jogo) if jogo is not None else len(online_userids())}
 
 
 # Mascotes: status.petcorral = GPetCorral (capacity, [GPet(index, data)]) em GNET; data e o

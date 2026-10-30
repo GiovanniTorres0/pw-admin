@@ -68,6 +68,7 @@
   .eqsub { font-size:11px; margin:10px 0 6px; }
   /* Lateral: busca + contas recolhiveis */
   .lsec + .lsec { margin-top:14px; }
+  .onum { font-size:22px; font-weight:600; }
   .lt { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin-bottom:2px; }
   .role .rn { display:flex; flex-direction:column; min-width:0; position:relative; }
   .role .rn small { font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -334,7 +335,7 @@ $("cashForm").onsubmit = async (e) => {
 
 // Lateral: nunca lista todas as contas (nao escala com milhares). Vazio = online agora + recentes;
 // digitando = busca no servidor (nome, conta ou ID), com no maximo 30 resultados.
-let ONLINE = [], RECENTES = [], buscaSeq = 0, buscaTimer;
+let RECENTES = [], buscaSeq = 0, buscaTimer;
 try { RECENTES = JSON.parse(localStorage.getItem("pwRecentes") || "[]"); } catch { RECENTES = []; }
 const marca = (txt, q) => {
   const t = esc(txt);
@@ -354,13 +355,11 @@ function mostrarLista(html) {
 }
 function renderLateral() {
   if ($("accSearch").value.trim()) return;
-  const on = new Set(ONLINE.map((r) => r.id));
-  mostrarLista(secao(`Online agora · ${fmt(ONLINE_TOTAL)}`, ONLINE, "", "Ninguém online.")
-    + (ONLINE_TOTAL > ONLINE.length ? `<p class="muted" style="font-size:12px">Mostrando ${ONLINE.length}. Use a busca.</p>` : "")
-    + secao("Recentes", RECENTES.map((r) => ({ ...r, online: on.has(r.id) })), "", ""));
+  mostrarLista(`<div class="lsec"><div class="lt">Online agora</div><div class="onum">${fmt(ONLINE_TOTAL)}</div></div>`
+    + secao("Recentes", RECENTES.map((r) => ({ ...r, online: false })), "", ""));
 }
 let ONLINE_TOTAL = 0;
-async function carregarOnline() { const o = await api("/api/online"); ONLINE = o.itens; ONLINE_TOTAL = o.total; }
+async function carregarOnline() { ONLINE_TOTAL = (await api("/api/online")).total; }
 async function loadAccounts() {
   await carregarOnline();
   api("/api/eu").then((e) => $("eu").textContent = e.admin).catch(() => {});
