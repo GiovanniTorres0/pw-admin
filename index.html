@@ -178,6 +178,20 @@
           background:transparent; color:var(--fg); font:inherit; font-size:12px; text-align:left; cursor:pointer; min-width:0; }
   .tile:hover { border-color:var(--accent); }
   .tile span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* Gestao: abas com as ferramentas do servidor */
+  dialog#gest { width:min(1000px, calc(100vw - 32px)); height:min(720px, calc(100vh - 32px)); padding:0; border:1px solid var(--line);
+                border-radius:12px; background:var(--card); color:var(--fg); }
+  dialog#gest[open] { display:flex; flex-direction:column; }
+  dialog#gest::backdrop { background:rgba(0,0,0,.45); }
+  .tabs { display:flex; gap:2px; flex:1; flex-wrap:wrap; }
+  .tabs button { border:0; background:transparent; color:var(--muted); font:inherit; padding:6px 10px; border-radius:6px; cursor:pointer; }
+  .tabs button.sel { color:var(--fg); background:color-mix(in srgb, var(--accent) 14%, transparent); }
+  #gBody { overflow:auto; padding:14px; flex:1; }
+  #gBody .row:first-child { margin-top:0; }
+  #gBody td a { color:var(--accent); cursor:pointer; }
+  .num { text-align:right; font-variant-numeric:tabular-nums; }
+  .kpis { display:flex; gap:24px; flex-wrap:wrap; margin-bottom:12px; }
+  .kpis div { display:flex; flex-direction:column; } .kpis b { font-size:20px; font-weight:600; }
 </style>
 </head>
 <body>
@@ -193,7 +207,8 @@
 
 <div id="app" hidden>
   <header><h1>PW Admin</h1><span class="muted">PW Teste · v156</span>
-    <button class="btn sec" id="openSrv" style="margin-left:auto">Aviso global</button>
+    <button class="btn sec" id="openGest" style="margin-left:auto">Gestão</button>
+    <button class="btn sec" id="openSrv">Aviso global</button>
     <span class="muted" id="eu"></span><button class="ibtn" id="sair" title="Sair">⎋</button></header>
   <main>
     <div>
@@ -220,6 +235,11 @@
   <div class="muted" style="margin-top:8px;font-size:12px">Vai para a conta inteira. Aparece no próximo login.</div>
 </dialog>
 <div id="toast" hidden></div>
+
+<dialog id="gest">
+  <div class="cat-head"><nav class="tabs" id="gTabs"></nav><button class="btn sec" id="gClose">Fechar</button></div>
+  <div id="gBody"></div>
+</dialog>
 
 <dialog id="cat">
   <div class="cat-head">
@@ -333,6 +353,169 @@ $("cashForm").onsubmit = async (e) => {
   } catch (err) { msg(null, err.message, false); }
 };
 
+// Gestao: ferramentas do servidor em abas. Nivel 1 suporte (so ve), 2 GM, 3 admin.
+let NIVEL = 0;
+const quando = (s) => s ? new Date(s * 1000).toLocaleString("pt-BR") : "—";
+const LOCAL_NOME = { pocket: "bolsa", storehouse: "banco", equipment: "equipado", dress: "moda", material: "materiais",
+  generalcard: "cartas", task: "missão", pets: "curral" };
+const quemLink = (r) => `<a data-role="${r.roleid}">${esc(r.nome)}</a> <span class="muted">${esc(r.conta)}</span>`;
+const varrInfo = (v) => `<span class="muted">varredura ${v.quando ? `de ${quando(v.quando)} · ${fmt(v.personagens)} personagens` : "ainda rodando…"}</span>
+  ${NIVEL >= 2 ? '<button class="btn sec" data-varrer>Varrer agora</button>' : ""}`;
+const tabela = (cab, linhas, vazio) => linhas.length
+  ? `<table><tr>${cab.map((c) => `<th${c.startsWith(">") ? ' class="num"' : ""}>${c.replace(">", "")}</th>`).join("")}</tr>${linhas.join("")}</table>`
+  : `<p class="muted">${vazio}</p>`;
+const ABAS = [
+  ["Quem tem", 1, async (b) => {
+    b.innerHTML = `<form class="row" id="qtF"><input id="qtQ" placeholder="Item: ID ou nome" style="flex:1" autofocus><button class="btn">Buscar</button></form><div id="qtR"></div>`;
+    $("qtF").onsubmit = async (e) => {
+      e.preventDefault();
+      let r;
+      try { r = await api(`/api/quemtem?q=${encodeURIComponent($("qtQ").value.trim())}`); } catch (err) { return msg(null, err.message, false); }
+      $("qtR").innerHTML = `<div class="row">${varrInfo(r.varredura)}</div>` + (r.itens.length ? r.itens.map((i) =>
+        `<h3>${icon(i.id)} ${esc(i.nome || "#" + i.id)} #${i.id} · ${fmt(i.total)} no jogo</h3>` +
+        tabela(["Personagem", ">Total", "Onde"], i.donos.map((d) => `<tr><td>${quemLink(d)}</td><td class="num">${fmt(d.total)}</td>
+          <td class="muted">${Object.entries(d.locais).map(([l, n]) => `${LOCAL_NOME[l] || l} ${fmt(n)}`).join(" · ")}</td></tr>`), "Ninguém tem.")
+        + (i.mais ? `<p class="muted">+${i.mais} personagens</p>` : "")).join("") : '<p class="muted">Nenhum item com esse nome ou ID.</p>');
+    };
+  }],
+  ["Punições", 1, async (b) => {
+    const r = await api("/api/punicoes");
+    b.innerHTML = tabela(["Personagem", "Tipo", "Até", "Por", "Motivo", ""], r.map((x) =>
+      `<tr><td>${quemLink(x)}</td><td>${x.tipo}</td><td>${quando(x.ate)}</td><td>${esc(x.por)}</td><td>${esc(x.motivo)}</td>
+       <td>${NIVEL >= 2 && ["ban", "mute"].includes(x.tipo) ? `<button class="btn sec" data-desfazer="${x.tipo}" data-id="${x.roleid}">Desfazer</button>` : ""}</td></tr>`),
+      "Ninguém banido ou mutado agora.");
+    b.querySelectorAll("[data-desfazer]").forEach((x) => x.onclick = async () => {
+      if (!confirm(`Desfazer ${x.dataset.desfazer}?`)) return;
+      try { await api(`/api/role/${x.dataset.id}/${x.dataset.desfazer}`, { minutes: 0 }); msg(null, "Desfeito.", true); abrirAba("Punições"); }
+      catch (e) { msg(null, e.message, false); }
+    });
+  }],
+  ["Economia", 1, async (b) => {
+    const r = await api("/api/economia");
+    const h = r.historico, salto = h.length > 1 ? h[0].total - h[1].total : 0;
+    b.innerHTML = `<div class="row">${varrInfo(r.varredura)}</div>
+      <div class="kpis"><div><span class="muted">Gold no jogo</span><b class="gold">${fmt(r.total.bolsa + r.total.banco)}</b></div>
+        <div><span class="muted">Bolsas</span><b>${fmt(r.total.bolsa)}</b></div><div><span class="muted">Bancos</span><b>${fmt(r.total.banco)}</b></div>
+        <div><span class="muted">Desde a anterior</span><b style="color:${salto > 0 ? "var(--warn)" : "inherit"}">${salto > 0 ? "+" : ""}${fmt(salto)}</b></div></div>
+      <h3>Maiores ganhos desde a varredura anterior</h3>${tabela(["Personagem", ">Ganho"], r.saltos.map((x) =>
+        `<tr><td>${quemLink(x)}</td><td class="num gold">+${fmt(x.ganho)}</td></tr>`), "Nenhum ganho.")}
+      <h3>Mais ricos</h3>${tabela(["Personagem", ">Bolsa", ">Banco", ">Total"], r.ricos.map((x) =>
+        `<tr><td>${quemLink(x)}</td><td class="num">${fmt(x.bolsa)}</td><td class="num">${fmt(x.banco)}</td><td class="num gold">${fmt(x.bolsa + x.banco)}</td></tr>`), "Sem dados.")}
+      <h3>Histórico</h3>${tabela(["Quando", ">Personagens", ">Gold total"], h.map((x) =>
+        `<tr><td>${x.quando}</td><td class="num">${fmt(x.personagens)}</td><td class="num">${fmt(x.total)}</td></tr>`), "Sem histórico.")}`;
+  }],
+  ["Auditoria", 2, async (b, pg = 0) => {
+    const f = b.querySelector("#auF");
+    const v = (k) => f ? f.elements[k].value : "";
+    const qs = new URLSearchParams({ admin: v("admin"), acao: v("acao"), roleid: v("roleid"), de: v("de"), ate: v("ate"), pagina: pg });
+    const r = await api(`/api/auditoria?${qs}`);
+    const opts = (l, sel) => `<option value="">todos</option>` + l.map((x) => `<option ${x === sel ? "selected" : ""}>${esc(x)}</option>`).join("");
+    b.innerHTML = `<form class="row" id="auF">
+        <label>GM<select name="admin">${opts(r.admins, v("admin"))}</select></label>
+        <label>Ação<select name="acao">${opts(r.acoes, v("acao"))}</select></label>
+        <label>Personagem (ID)<input name="roleid" value="${esc(v("roleid"))}" style="width:110px"></label>
+        <label>De<input name="de" type="date" value="${esc(v("de"))}"></label><label>Até<input name="ate" type="date" value="${esc(v("ate"))}"></label>
+        <label>&nbsp;<button class="btn">Filtrar</button></label></form>
+      ${tabela(["Quando", "GM", "Ação", "Personagem", "Detalhes"], r.linhas.map((x) =>
+        `<tr><td style="white-space:nowrap">${x.quando}</td><td>${esc(x.admin)}</td><td>${esc(x.acao)}</td>
+         <td>${x.roleid ? `<a data-role="${x.roleid}">#${x.roleid}</a>` : x.userid ? `conta #${x.userid}` : ""}</td>
+         <td class="muted" style="font-size:12px;word-break:break-all">${esc(x.dados)}</td></tr>`), "Nada encontrado.")}
+      <div class="row">${pg ? '<button class="btn sec" id="auAnt">Anterior</button>' : ""}${r.mais ? '<button class="btn sec" id="auProx">Próxima</button>' : ""}</div>`;
+    const aba = ABAS.find((a) => a[0] === "Auditoria")[2];
+    $("auF").onsubmit = (e) => { e.preventDefault(); aba(b, 0); };
+    if ($("auAnt")) $("auAnt").onclick = () => aba(b, pg - 1);
+    if ($("auProx")) $("auProx").onclick = () => aba(b, pg + 1);
+  }],
+  ["Contas", 3, async (b) => {
+    b.innerHTML = `<form class="row" id="ctF"><input id="ctQ" placeholder="Login ou ID da conta" style="flex:1"><button class="btn">Buscar</button></form>
+      <form class="row" id="ctN"><input id="ctL" placeholder="Novo login" autocomplete="off"><input id="ctS" placeholder="Senha" autocomplete="new-password">
+        <button class="btn sec">Criar conta</button></form><div id="ctR"></div>`;
+    const listar = async () => {
+      const r = await api(`/api/contas?q=${encodeURIComponent($("ctQ").value.trim())}`);
+      $("ctR").innerHTML = tabela(["Conta", "Criada", "Personagens", ""], r.map((c) =>
+        `<tr><td>${esc(c.nome)} <span class="muted">#${c.id}</span>${c.online ? ' <span class="tag on">online</span>' : ""}${c.gm ? ' <span class="tag gm">GM</span>' : ""}</td>
+         <td class="muted">${esc(c.criada)}</td><td>${c.personagens.map((x) => `<a data-role="${x.id}">${esc(x.nome)}</a>`).join(", ") || '<span class="muted">nenhum</span>'}</td>
+         <td><button class="btn sec" data-senha="${c.id}" data-nome="${esc(c.nome)}">Trocar senha</button></td></tr>`), "Nenhuma conta.");
+      $("ctR").querySelectorAll("[data-senha]").forEach((x) => x.onclick = async () => {
+        const senha = prompt(`Nova senha para ${x.dataset.nome} (6 a 20, sem espaço):`);
+        if (!senha) return;
+        try { await api(`/api/contas/${x.dataset.senha}/senha`, { senha }); msg(null, "Senha trocada.", true); } catch (e) { msg(null, e.message, false); }
+      });
+    };
+    $("ctF").onsubmit = (e) => { e.preventDefault(); listar().catch((err) => msg(null, err.message, false)); };
+    $("ctN").onsubmit = async (e) => {
+      e.preventDefault();
+      try { await api("/api/contas", { login: $("ctL").value.trim(), senha: $("ctS").value }); msg(null, "Conta criada.", true);
+        $("ctQ").value = $("ctL").value.trim().toLowerCase(); $("ctL").value = $("ctS").value = ""; listar(); }
+      catch (err) { msg(null, err.message, false); }
+    };
+    listar();
+  }],
+  ["Servidor", 1, async (b) => {
+    const r = await api("/api/servidor");
+    const gb = (n) => (n / 2 ** 30).toFixed(1) + " GB";
+    const parados = Object.entries(r.processos).filter(([n, c]) => !c && n !== "gacd");
+    b.innerHTML = `<div class="kpis"><div><span class="muted">Online</span><b>${fmt(r.online)}</b></div>
+        <div><span class="muted">Memória livre</span><b>${gb(r.memoria.livre)} <small class="muted">/ ${gb(r.memoria.total)}</small></b></div>
+        <div><span class="muted">Disco livre</span><b>${gb(r.disco.livre)} <small class="muted">/ ${gb(r.disco.total)}</small></b></div>
+        <div><span class="muted">Carga</span><b>${r.carga.map((x) => x.toFixed(2)).join(" ")}</b></div></div>
+      ${parados.length ? `<div class="msg bad">Parado: ${parados.map(([n]) => n).join(", ")}</div>` : ""}
+      ${tabela(["Processo", ">Rodando"], Object.entries(r.processos).map(([n, c]) =>
+        `<tr><td>${n}</td><td class="num" style="color:${c ? "var(--ok)" : "var(--bad)"}">${c}</td></tr>`), "")}
+      ${NIVEL >= 3 ? `<h3>Reiniciar</h3>${r.reinicio ? `<div class="row">Marcado por ${esc(r.reinicio.por)} para ${quando(r.reinicio.ate)}
+          <button class="btn sec danger" id="svCanc">Cancelar</button></div>`
+        : `<div class="row"><span class="muted">Avisa todos no jogo antes e reinicia</span><input id="svMin" type="number" min="1" max="30" value="5" style="width:70px">
+          <span class="muted">min</span><button class="btn danger" id="svRe">Reiniciar servidor</button></div>`}` : ""}`;
+    if ($("svRe")) $("svRe").onclick = async () => {
+      if (!confirm(`Reiniciar o servidor em ${$("svMin").value} min? Todos serão desconectados.`)) return;
+      try { await api("/api/servidor/reiniciar", { minutos: Number($("svMin").value) }); abrirAba("Servidor"); } catch (e) { msg(null, e.message, false); }
+    };
+    if ($("svCanc")) $("svCanc").onclick = async () => {
+      try { await api("/api/servidor/cancelar", {}); abrirAba("Servidor"); } catch (e) { msg(null, e.message, false); }
+    };
+  }],
+  ["GMs", 3, async (b) => {
+    const r = await api("/api/admins");
+    const nv = (sel) => ["suporte", "gm", "admin"].map((n) => `<option ${n === sel ? "selected" : ""}>${n}</option>`).join("");
+    b.innerHTML = `<form class="row" id="gmN"><input id="gmNome" placeholder="Nome do novo GM" style="flex:1"><select id="gmNv">${nv("gm")}</select>
+        <button class="btn sec">Criar</button></form>
+      <p class="muted" style="font-size:12px">suporte só vê · gm edita e modera · admin restaura backup, dá cash, cuida de contas, GMs e servidor</p>
+      ${tabela(["Nome", "Nível", "Último login", ""], r.map((a) => `<tr${a.ativo ? "" : ' class="muted"'}><td>${esc(a.nome)}${a.ativo ? "" : " · desativado"}</td>
+        <td><select data-nivel="${esc(a.nome)}">${nv(a.nivel)}</select></td><td class="muted">${esc(a.ultimo_login || "—")}</td>
+        <td><button class="btn sec" data-gm="senha" data-nome="${esc(a.nome)}">Nova senha</button>
+          <button class="btn sec ${a.ativo ? "danger" : ""}" data-gm="${a.ativo ? "desativar" : "ativar"}" data-nome="${esc(a.nome)}">${a.ativo ? "Desativar" : "Ativar"}</button></td></tr>`), "")}`;
+    const mudar = async (corpo) => {
+      try {
+        const x = await api("/api/admins", corpo);
+        if (x.senha) prompt(`Senha de ${corpo.nome} (aparece só agora, copie):`, x.senha); else msg(null, "Feito.", true);
+        abrirAba("GMs");
+      } catch (e) { msg(null, e.message, false); abrirAba("GMs"); }
+    };
+    $("gmN").onsubmit = (e) => { e.preventDefault(); mudar({ acao: "criar", nome: $("gmNome").value.trim(), nivel: $("gmNv").value }); };
+    b.querySelectorAll("[data-nivel]").forEach((s) => s.onchange = () => mudar({ acao: "nivel", nome: s.dataset.nivel, nivel: s.value }));
+    b.querySelectorAll("[data-gm]").forEach((x) => x.onclick = () =>
+      confirm(`${x.textContent} ${x.dataset.nome}?`) && mudar({ acao: x.dataset.gm, nome: x.dataset.nome }));
+  }],
+];
+let ABA = "Quem tem";
+async function abrirAba(nome) {
+  ABA = nome;
+  $("gTabs").innerHTML = ABAS.filter((a) => NIVEL >= a[1]).map(([n]) => `<button class="${n === nome ? "sel" : ""}">${n}</button>`).join("");
+  $("gTabs").querySelectorAll("button").forEach((x) => x.onclick = () => abrirAba(x.textContent));
+  const b = $("gBody");
+  b.innerHTML = '<p class="muted">Carregando…</p>';
+  try { await ABAS.find((a) => a[0] === nome)[2](b); } catch (e) { b.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; }
+}
+$("openGest").onclick = () => { $("gest").showModal(); abrirAba(ABA); };
+$("gClose").onclick = () => $("gest").close();
+$("gBody").addEventListener("click", async (e) => {
+  const a = e.target.closest("[data-role]");
+  if (a) { $("gest").close(); return loadRole(Number(a.dataset.role)); }
+  if (e.target.closest("[data-varrer]")) {
+    try { await api("/api/varrer", {}); msg(null, "Varredura iniciada. Leva alguns minutos.", true); } catch (err) { msg(null, err.message, false); }
+  }
+});
+
 // Lateral: nunca lista todas as contas (nao escala com milhares). Vazio = online agora + recentes;
 // digitando = busca no servidor (nome, conta ou ID), com no maximo 30 resultados.
 let RECENTES = [], buscaSeq = 0, buscaTimer;
@@ -362,7 +545,12 @@ let ONLINE_TOTAL = 0;
 async function carregarOnline() { ONLINE_TOTAL = (await api("/api/online")).total; }
 async function loadAccounts() {
   await carregarOnline();
-  api("/api/eu").then((e) => $("eu").textContent = e.admin).catch(() => {});
+  try {
+    const eu = await api("/api/eu");
+    NIVEL = eu.nivel;
+    $("eu").textContent = `${eu.admin} · ${["", "suporte", "gm", "admin"][eu.nivel]}`;
+    $("openSrv").hidden = NIVEL < 2;
+  } catch { /* fica sem nivel: tudo so leitura */ }
   show("app");
   renderLateral();
 }
@@ -823,6 +1011,14 @@ O estado atual vira um backup novo.`)) return;
   const bv = $("bkVer");
   if (bv) bv.onclick = () => loadRole(id, false, $("bk").value);
   if (backup) modoBackup(d, r, id, backup);
+  // Nivel: suporte so ve (fica so recarregar e ver backup); GM nao restaura nem da cash
+  if (NIVEL < 3) ["cashBtn", "restore", "bkRest"].forEach((k) => $(k)?.remove());
+  if (NIVEL < 2) {
+    d.querySelectorAll("input, textarea, button, select").forEach((el) => {
+      if (!["roleReload", "bk", "bkVer", "bkSair"].includes(el.id)) el.disabled = true;
+    });
+    $("save")?.remove(); $("snap")?.remove();
+  }
 }
 
 // Catalogo: clicar num item preenche o campo que abriu o catalogo (correio ou bolsa).

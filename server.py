@@ -13,7 +13,9 @@ import json
 import re
 import os
 import secrets
+import shutil
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -321,6 +323,15 @@ TABELAS = [
         KEY k_quando (quando),
         KEY k_admin (admin, id)
     ) DEFAULT CHARSET=utf8mb4""",
+    # Um registro por varredura: total de gold no jogo, para ver saltos (duplicacao)
+    """CREATE TABLE IF NOT EXISTS pwadmin_economia (
+        quando DATETIME NOT NULL PRIMARY KEY,
+        personagens INT NOT NULL,
+        bolsa BIGINT NOT NULL,
+        banco BIGINT NOT NULL
+    ) DEFAULT CHARSET=utf8mb4""",
+    # Admins de antes dos niveis continuam com tudo
+    "ALTER TABLE pwadmin_admins ADD COLUMN IF NOT EXISTS nivel VARCHAR(10) NOT NULL DEFAULT 'admin'",
 ]
 
 
@@ -372,15 +383,29 @@ def login_admin(nome, senha):
     return True
 
 
-_ativos = {}  # nome -> (ativo, conferido_em): admin desativado perde a sessao em ate 60 s
+# Niveis: suporte so ve; GM edita personagem e faz moderacao; admin restaura backup, da cash,
+# cuida de contas, de GMs e do servidor.
+NIVEIS = {"suporte": 1, "gm": 2, "admin": 3}
+_ativos = {}  # nome -> (nivel, conferido_em): admin desativado ou rebaixado muda em ate 60 s
 
 
 def admin_ativo(nome):
-    ativo, quando = _ativos.get(nome, (False, 0))
+    """Nivel do admin (1..3), ou 0 se nao existe ou esta desativado."""
+    nivel, quando = _ativos.get(nome, (0, 0))
     if time.time() - quando > 60:
-        ativo = bool(db_exec("SELECT id FROM pwadmin_admins WHERE nome=%s AND ativo=1", (nome,)))
-        _ativos[nome] = (ativo, time.time())
-    return ativo
+        rows = db_exec("SELECT nivel FROM pwadmin_admins WHERE nome=%s AND ativo=1", (nome,))
+        nivel = NIVEIS.get(rows[0]["nivel"], 0) if rows else 0
+        _ativos[nome] = (nivel, time.time())
+    return nivel
+
+
+class SemPermissao(Exception):
+    pass
+
+
+def exigir(nivel):
+    if getattr(CTX, "nivel", 0) < NIVEIS[nivel]:
+        raise SemPermissao(f"sem permissão: precisa de nível {nivel}")
 
 
 def db_query(sql, args=()):
@@ -1031,6 +1056,346 @@ def add_cash(body):
 LIVE_ROLE_ACTIONS = {"kick": live_kick, "ban": live_ban, "mute": live_mute, "mail": live_mail}
 
 
+# ---------------------------------------------------------------- varredura
+# Le todos os personagens de tempos em tempos, devagar, e monta em memoria: quem tem cada item
+# (bolsa, banco, equipado, bancos extras, missao, curral), o gold de cada um e os bloqueios
+# gravados no personagem. A primeira varredura do dia tambem guarda um backup de todos.
+# Correio nao entra: o gamedbd guarda em outra tabela, que o painel ainda nao le.
+VARREDURA_INTERVALO = 3600
+VARREDURA_PAUSA = 0.02  # entre personagens, para nao pesar no gamedbd
+DIARIO_DIAS = 7
+_varredura = {"quando": 0, "duracao": 0, "itens": {}, "gold": {}, "gold_antes": {}, "forbid": {}, "nomes": {}}
+_varrer_agora = threading.Event()
+
+
+def _pasta_diario(dia):
+    return os.path.join(CFG["backup_dir"], "diario", dia)
+
+
+def _varrer():
+    with _indice_lock:
+        roles = [(rid, nome, uid) for uid, c in _indice.items() for rid, nome in c["roles"]]
+    inicio, dia = time.time(), time.strftime("%Y%m%d")
+    pasta = _pasta_diario(dia)
+    diario = not os.path.isdir(pasta)
+    tmp = pasta + ".parcial"
+    if diario:
+        os.makedirs(tmp, exist_ok=True)
+    itens, gold, forbid, nomes = {}, {}, {}, {}
+    for rid, nome, uid in roles:
+        try:
+            role, raw = p.get_role(GAMEDB, rid)
+        except Exception:  # noqa: BLE001 - apagado no meio da varredura
+            continue
+        nomes[rid] = (nome, uid)
+        for local, ler in LOCAIS.items():
+            for it in ler(role):
+                itens.setdefault(it["id"], []).append((rid, local, it["count"]))
+        gold[rid] = (role["pocket"]["money"], role["storehouse"]["money"])
+        f = [x for x in role["base"]["forbid"] if x["time"] > 0]
+        if f:
+            forbid[rid] = f
+        if diario:
+            with open(os.path.join(tmp, f"{rid}.bin"), "wb") as fh:
+                fh.write(raw)
+        time.sleep(VARREDURA_PAUSA)
+    if diario:
+        os.replace(tmp, pasta)
+        base = os.path.dirname(pasta)
+        for velho in sorted(n for n in os.listdir(base) if n.isdigit())[:-DIARIO_DIAS]:
+            shutil.rmtree(os.path.join(base, velho), ignore_errors=True)
+    _varredura.update(quando=time.time(), duracao=round(time.time() - inicio, 1), itens=itens,
+                      gold_antes=_varredura["gold"], gold=gold, forbid=forbid, nomes=nomes)
+    db_exec("INSERT IGNORE INTO pwadmin_economia (quando, personagens, bolsa, banco) VALUES (NOW(), %s, %s, %s)",
+            (len(gold), sum(g[0] for g in gold.values()), sum(g[1] for g in gold.values())))
+
+
+def _manter_varredura():
+    time.sleep(90)  # deixa o indice montar primeiro
+    while True:
+        try:
+            _varrer()
+        except Exception as e:  # noqa: BLE001
+            print("varredura:", e, file=sys.stderr, flush=True)
+        _varrer_agora.wait(VARREDURA_INTERVALO)
+        _varrer_agora.clear()
+
+
+def _quem(rid):
+    nome, uid = _varredura["nomes"].get(rid, ("?", 0))
+    return {"roleid": rid, "nome": nome, "userid": uid, "conta": nome_conta(uid) if uid else ""}
+
+
+def _status_varredura():
+    return {"quando": int(_varredura["quando"]), "duracao": _varredura["duracao"],
+            "personagens": len(_varredura["nomes"])}
+
+
+def quem_tem(q):
+    """Quem tem o item (ID exato, ou ate 20 itens pelo nome)."""
+    q = q.strip().lstrip("#")
+    if q.isdigit():
+        tids = [int(q)]
+    else:
+        ql = q.lower()
+        tids = [int(k) for k, v in ITENS.items() if ql and ql in v.get("nome", "").lower()][:20] if len(ql) >= 2 else []
+    out = []
+    for tid in tids:
+        donos = {}
+        for rid, local, n in _varredura["itens"].get(tid, []):
+            d = donos.setdefault(rid, {"total": 0, "locais": {}})
+            d["total"] += n
+            d["locais"][local] = d["locais"].get(local, 0) + n
+        lista = sorted(donos.items(), key=lambda x: -x[1]["total"])
+        out.append({"id": tid, "nome": ITENS.get(str(tid), {}).get("nome", ""), "total": sum(d["total"] for d in donos.values()),
+                    "donos": [_quem(rid) | d for rid, d in lista[:200]], "mais": max(0, len(lista) - 200)})
+    out.sort(key=lambda x: -x["total"])
+    return {"varredura": _status_varredura(), "itens": out}
+
+
+def economia():
+    gold = _varredura["gold"]
+    antes = _varredura["gold_antes"]
+    ricos = sorted(gold.items(), key=lambda x: -sum(x[1]))[:20]
+    saltos = sorted(((rid, sum(g) - sum(antes.get(rid, (0, 0)))) for rid, g in gold.items() if rid in antes),
+                    key=lambda x: -x[1])[:10]
+    hist = db_exec("SELECT quando, personagens, bolsa, banco FROM pwadmin_economia ORDER BY quando DESC LIMIT 48")
+    return {"varredura": _status_varredura(),
+            "total": {"bolsa": sum(g[0] for g in gold.values()), "banco": sum(g[1] for g in gold.values())},
+            "ricos": [_quem(rid) | {"bolsa": g[0], "banco": g[1]} for rid, g in ricos],
+            "saltos": [_quem(rid) | {"ganho": d} for rid, d in saltos if d > 0],
+            "historico": [{"quando": str(h["quando"]), "personagens": h["personagens"], "total": h["bolsa"] + h["banco"]}
+                          for h in hist]}
+
+
+# ---------------------------------------------------------------- punicoes e auditoria
+
+FORBID_TIPOS = {100: "ban", 101: "mute", 102: "troca", 103: "venda", 105: "ban"}
+
+
+def punicoes():
+    """Bans e mutes ainda valendo: os do painel (auditoria, com quem e motivo) e os gravados no
+    personagem pelo jogo (varredura)."""
+    agora = time.time()
+    rows = db_exec("SELECT a.id, a.quando, a.admin, a.acao, a.roleid, a.dados FROM pwadmin_auditoria a "
+                   "JOIN (SELECT roleid, MAX(id) id FROM pwadmin_auditoria WHERE acao IN ('ban','unban','mute','unmute') "
+                   "AND quando > NOW() - INTERVAL 366 DAY GROUP BY roleid, IF(acao IN ('ban','unban'), 'b', 'm')) u ON u.id = a.id")
+    out, vistos = [], set()
+    for r in rows:
+        if r["acao"] not in ("ban", "mute"):
+            continue
+        d = json.loads(r["dados"] or "{}")
+        ate = r["quando"].timestamp() + int(d.get("minutes", 0)) * 60
+        if ate > agora:
+            vistos.add((r["roleid"], r["acao"]))
+            out.append(_quem(r["roleid"]) | {"tipo": r["acao"], "desde": int(r["quando"].timestamp()), "ate": int(ate),
+                                             "por": r["admin"], "motivo": d.get("reason", "")})
+    for rid, fs in _varredura["forbid"].items():
+        for f in fs:
+            tipo = FORBID_TIPOS.get(f["type"], str(f["type"]))
+            ate = f["createtime"] + f["time"]
+            if ate > agora and (rid, tipo) not in vistos:
+                out.append(_quem(rid) | {"tipo": tipo, "desde": f["createtime"], "ate": ate, "por": "jogo",
+                                         "motivo": f["reason"].decode("utf-16-le", "replace") if isinstance(f["reason"], bytes) else ""})
+    return sorted(out, key=lambda x: x["ate"])
+
+
+AUDITORIA_POR_PAGINA = 50
+
+
+def auditoria(q):
+    onde, args = [], []
+    for campo, col in (("admin", "admin"), ("acao", "acao")):
+        if q.get(campo, [""])[0]:
+            onde.append(f"{col} = %s")
+            args.append(q[campo][0][:32])
+    if q.get("roleid", [""])[0].isdigit():
+        onde.append("roleid = %s")
+        args.append(int(q["roleid"][0]))
+    for campo, op in (("de", ">="), ("ate", "<")):
+        v = q.get(campo, [""])[0]
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+            onde.append(f"quando {op} %s" + (" + INTERVAL 1 DAY" if campo == "ate" else ""))
+            args.append(v)
+    pagina = max(0, int(q.get("pagina", ["0"])[0] or 0))
+    where = ("WHERE " + " AND ".join(onde)) if onde else ""
+    rows = db_exec(f"SELECT id, quando, admin, ip, acao, roleid, userid, backup, dados FROM pwadmin_auditoria {where} "
+                   f"ORDER BY id DESC LIMIT %s OFFSET %s", (*args, AUDITORIA_POR_PAGINA + 1, pagina * AUDITORIA_POR_PAGINA))
+    return {"linhas": [r | {"quando": str(r["quando"])} for r in rows[:AUDITORIA_POR_PAGINA]],
+            "mais": len(rows) > AUDITORIA_POR_PAGINA,
+            "admins": [r["admin"] for r in db_exec("SELECT DISTINCT admin FROM pwadmin_auditoria ORDER BY admin")],
+            "acoes": [r["acao"] for r in db_exec("SELECT DISTINCT acao FROM pwadmin_auditoria ORDER BY acao")]}
+
+
+# ---------------------------------------------------------------- contas (authd)
+# Senha do jogo: md5(login + senha), em binario, como o gauthd confere.
+
+def _senha_jogo(login, senha):
+    if not 6 <= len(senha) <= 20 or not senha.isprintable() or " " in senha:
+        raise ValueError("senha: 6 a 20 caracteres, sem espaço")
+    return hashlib.md5((login + senha).encode()).digest()
+
+
+def db_auth(sql, args=()):
+    conn = pymysql.connect(**CFG["db"], charset="latin1", cursorclass=pymysql.cursors.DictCursor, autocommit=True)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, args)
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def contas(q):
+    q = q.strip()
+    if q.isdigit():
+        rows = db_query("SELECT id, name, creatime FROM users WHERE id=%s", (int(q),))
+    elif q:
+        like = "%" + q.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_") + "%"
+        rows = db_query("SELECT id, name, creatime FROM users WHERE name LIKE %s ORDER BY LENGTH(name), name LIMIT 20", (like,))
+    else:
+        rows = db_query("SELECT id, name, creatime FROM users ORDER BY id DESC LIMIT 20")
+    online, gms = online_userids(), gm_userids()
+    return [{"id": r["id"], "nome": r["name"], "criada": str(r["creatime"] or ""), "online": r["id"] in online,
+             "gm": r["id"] in gms, "personagens": [{"id": rid, "nome": n} for rid, n in _reler_conta(r["id"], r["name"])]}
+            for r in rows]
+
+
+def criar_conta(body):
+    login = str(body.get("login", "")).strip().lower()
+    if not re.fullmatch(r"[a-z0-9]{4,20}", login):
+        raise ValueError("login: 4 a 20 letras minúsculas ou números")
+    if db_query("SELECT id FROM users WHERE name=%s", (login,)):
+        raise ValueError("login já existe")
+    h = _senha_jogo(login, str(body.get("senha", "")))
+    db_auth("CALL adduser(%s, %s, '', '', '', '', '', '', '', '', '', '', '', 0, '', '', %s)", (login, h, h))
+    uid = db_query("SELECT id FROM users WHERE name=%s", (login,))[0]["id"]
+    audit("conta_criada", userid=uid, login=login)
+    return {"ok": True, "id": uid}
+
+
+def senha_conta(userid, body):
+    rows = db_query("SELECT name FROM users WHERE id=%s", (userid,))
+    if not rows:
+        raise ValueError("conta não existe")
+    login = rows[0]["name"]
+    db_auth("CALL changePasswd(%s, %s)", (login, _senha_jogo(login, str(body.get("senha", "")))))
+    audit("conta_senha", userid=userid, login=login)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- servidor
+
+# nome mostrado -> nome do processo (/proc/PID/comm); o authd daqui e java
+PROCESSOS = {"authd": "java", "gamedbd": "gamedbd", "uniquenamed": "uniquenamed", "gdeliveryd": "gdeliveryd",
+             "glinkd": "glinkd", "gfactiond": "gfactiond", "logservice": "logservice", "gacd": "gacd", "gs": "gs"}
+_reinicio = {"ate": 0, "por": "", "cancelado": threading.Event()}
+
+
+def _contar_processos():
+    comms = []
+    for pid in filter(str.isdigit, os.listdir("/proc")):
+        try:
+            with open(f"/proc/{pid}/comm") as f:
+                comms.append(f.read().strip())
+        except OSError:
+            continue
+    return {n: comms.count(c) for n, c in PROCESSOS.items()}
+
+
+def servidor():
+    mem = {}
+    with open("/proc/meminfo") as f:
+        for linha in f:
+            k, v = linha.split(":")
+            mem[k] = int(v.split()[0]) * 1024
+    disco = shutil.disk_usage("/")
+    jogo = em_jogo()
+    return {"processos": _contar_processos(), "carga": os.getloadavg(),
+            "memoria": {"total": mem["MemTotal"], "livre": mem["MemAvailable"]},
+            "disco": {"total": disco.total, "livre": disco.free},
+            "online": len(jogo) if jogo is not None else len(online_userids()),
+            "reinicio": {"ate": int(_reinicio["ate"]), "por": _reinicio["por"]} if _reinicio["ate"] else None}
+
+
+def _reiniciar(minutos, admin):
+    cancelado = _reinicio["cancelado"]
+    for falta in range(minutos, 0, -1):
+        if falta in (minutos, 10, 5, 3, 2, 1):
+            p.broadcast(DELIVERY, f"O servidor vai reiniciar em {falta} minuto{'s' if falta > 1 else ''}. Fique em local seguro.")
+        if cancelado.wait(60):
+            p.broadcast(DELIVERY, "Reinício do servidor cancelado.")
+            return
+    r = subprocess.run(["sudo", "-n", "systemctl", "restart", "pwserver"], capture_output=True, text=True, timeout=300)
+    audit("servidor_reiniciado", admin=admin, ip="", retcode=r.returncode, erro=r.stderr[-300:])
+    _reinicio["ate"] = 0
+
+
+def reiniciar_servidor(body):
+    minutos = int(body.get("minutos", 5))
+    if not 1 <= minutos <= 30:
+        raise ValueError("minutos: 1 a 30")
+    if _reinicio["ate"]:
+        raise ValueError("já tem um reinício marcado")
+    _reinicio.update(ate=time.time() + minutos * 60, por=CTX.admin, cancelado=threading.Event())
+    threading.Thread(target=_reiniciar, args=(minutos, CTX.admin), daemon=True).start()
+    audit("servidor_reinicio", minutos=minutos)
+    return {"ok": True}
+
+
+def cancelar_reinicio():
+    if not _reinicio["ate"]:
+        raise ValueError("nenhum reinício marcado")
+    _reinicio["cancelado"].set()
+    _reinicio["ate"] = 0
+    audit("servidor_reinicio_cancelado")
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- admins do painel
+
+def lista_admins():
+    return [r | {"criado": str(r["criado"]), "ultimo_login": str(r["ultimo_login"] or "")}
+            for r in db_exec("SELECT nome, nivel, ativo, criado, ultimo_login FROM pwadmin_admins ORDER BY nome")]
+
+
+def mudar_admin(body):
+    """acao: criar (devolve a senha uma vez), nivel, senha (nova senha), desativar, ativar."""
+    nome, acao = str(body.get("nome", "")).strip(), body.get("acao")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{2,32}", nome):
+        raise ValueError("nome: 2 a 32 letras, números, _ . -")
+    nivel = body.get("nivel", "gm")
+    if nivel not in NIVEIS:
+        raise ValueError("nível inválido")
+    existe = bool(db_exec("SELECT id FROM pwadmin_admins WHERE nome=%s", (nome,)))
+    if acao != "criar" and not existe:
+        raise ValueError("admin não existe")
+    if nome == CTX.admin and acao in ("nivel", "desativar"):
+        raise ValueError("não dá para mudar o próprio nível ou se desativar")
+    out = {"ok": True}
+    if acao == "criar":
+        if existe:
+            raise ValueError("já existe")
+        out["senha"] = secrets.token_urlsafe(12)
+        db_exec("INSERT INTO pwadmin_admins (nome, senha, nivel) VALUES (%s, %s, %s)", (nome, hash_senha(out["senha"]), nivel))
+    elif acao == "senha":
+        out["senha"] = secrets.token_urlsafe(12)
+        db_exec("UPDATE pwadmin_admins SET senha=%s WHERE nome=%s", (hash_senha(out["senha"]), nome))
+    elif acao == "nivel":
+        db_exec("UPDATE pwadmin_admins SET nivel=%s WHERE nome=%s", (nivel, nome))
+    elif acao in ("desativar", "ativar"):
+        db_exec("UPDATE pwadmin_admins SET ativo=%s WHERE nome=%s", (int(acao == "ativar"), nome))
+    else:
+        raise ValueError("ação inválida")
+    _ativos.pop(nome, None)
+    if acao in ("senha", "desativar"):  # derruba as sessoes abertas dele
+        for t, (_, n) in list(SESSIONS.items()):
+            if n == nome:
+                SESSIONS.pop(t, None)
+    audit("admin_" + acao, alvo=nome, nivel=nivel if acao in ("criar", "nivel") else None)
+    return out
+
+
 # ---------------------------------------------------------------- HTTP
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -1056,8 +1421,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         for part in self.headers.get("Cookie", "").split(";"):
             k, _, v = part.strip().partition("=")
             expira, nome = SESSIONS.get(v, (0, ""))
-            if k == "pwadmin" and expira > time.time() and admin_ativo(nome):
-                CTX.admin, CTX.ip, CTX.token = nome, self.client_address[0], v
+            nivel = admin_ativo(nome) if k == "pwadmin" and expira > time.time() else 0
+            if nivel:
+                CTX.admin, CTX.ip, CTX.token, CTX.nivel = nome, self.client_address[0], v, nivel
                 return nome
         return None
 
@@ -1074,7 +1440,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send(401, {"error": "login necessario"})
         try:
             if path == "/api/eu":
-                return self._send(200, {"admin": CTX.admin})
+                return self._send(200, {"admin": CTX.admin, "nivel": CTX.nivel})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            if path == "/api/quemtem":
+                return self._send(200, quem_tem(q.get("q", [""])[0][:40]))
+            if path == "/api/economia":
+                return self._send(200, economia())
+            if path == "/api/punicoes":
+                return self._send(200, punicoes())
+            if path == "/api/servidor":
+                return self._send(200, servidor())
+            if path == "/api/auditoria":
+                exigir("gm")
+                return self._send(200, auditoria(q))
+            if path == "/api/contas":
+                exigir("admin")
+                return self._send(200, contas(q.get("q", [""])[0][:32]))
+            if path == "/api/admins":
+                exigir("admin")
+                return self._send(200, lista_admins())
             if path == "/api/busca":
                 q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("q", [""])[0]
                 return self._send(200, buscar(q[:40]))
@@ -1126,6 +1510,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                                           "versao": hashlib.sha1(raw).hexdigest()[:16],
                                                           "account": nome_conta(role["base"]["userid"])})
             return self._send(404, {"error": "nao encontrado"})
+        except SemPermissao as e:
+            return self._send(403, {"error": str(e)})
         except Exception as e:  # noqa: BLE001 - devolve o erro para a interface
             return self._send(500, {"error": str(e)})
 
@@ -1155,6 +1541,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True}, headers={
                     "Set-Cookie": "pwadmin=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"})
             parts = path.strip("/").split("/")
+            if len(parts) == 4 and parts[:2] == ["api", "role"]:
+                exigir("admin" if parts[3] == "restore" else "gm")
+            if path == "/api/broadcast" or path == "/api/varrer":
+                exigir("gm")
+            if path in ("/api/cash", "/api/admins", "/api/contas", "/api/servidor/reiniciar", "/api/servidor/cancelar") \
+                    or parts[:2] == ["api", "contas"]:
+                exigir("admin")
+            if path == "/api/varrer":
+                _varrer_agora.set()
+                return self._send(200, {"ok": True})
+            if path == "/api/admins":
+                return self._send(200, mudar_admin(body))
+            if path == "/api/contas":
+                return self._send(200, criar_conta(body))
+            if len(parts) == 4 and parts[:2] == ["api", "contas"] and parts[3] == "senha":
+                return self._send(200, senha_conta(int(parts[2]), body))
+            if path == "/api/servidor/reiniciar":
+                return self._send(200, reiniciar_servidor(body))
+            if path == "/api/servidor/cancelar":
+                return self._send(200, cancelar_reinicio())
             if len(parts) == 4 and parts[:2] == ["api", "role"] and parts[3] == "edit":
                 return self._send(200, edit_role(int(parts[2]), body.get("changes", {})))
             if len(parts) == 4 and parts[:2] == ["api", "role"] and parts[3] == "additem":
@@ -1172,6 +1578,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if path == "/api/cash":
                 return self._send(200, add_cash(body))
             return self._send(404, {"error": "nao encontrado"})
+        except SemPermissao as e:
+            return self._send(403, {"error": str(e)})
         except (ValueError, p.RpcError) as e:
             return self._send(400, {"error": str(e)})
         except Exception as e:  # noqa: BLE001
@@ -1179,24 +1587,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 def comando_admin(args):
-    """python3 -I server.py admin NOME      cria o admin (ou troca a senha) e mostra a senha nova
+    """python3 -I server.py admin NOME [suporte|gm|admin]  cria o admin (ou troca a senha) e mostra a senha nova
        python3 -I server.py desativar NOME  bloqueia o acesso (sai em ate 60 s)
        python3 -I server.py admins          lista os admins"""
     preparar_banco()
     if args[0] == "admins":
-        for a in db_exec("SELECT nome, ativo, criado, ultimo_login FROM pwadmin_admins ORDER BY nome"):
-            print(f"{a['nome']:<20} {'ativo' if a['ativo'] else 'DESATIVADO':<11} criado {a['criado']}  "
+        for a in db_exec("SELECT nome, nivel, ativo, criado, ultimo_login FROM pwadmin_admins ORDER BY nome"):
+            print(f"{a['nome']:<20} {a['nivel']:<8} {'ativo' if a['ativo'] else 'DESATIVADO':<11} criado {a['criado']}  "
                   f"último login {a['ultimo_login'] or '-'}")
         return
     nome = args[1].strip()
     if not re.fullmatch(r"[A-Za-z0-9_.-]{2,32}", nome):
         raise SystemExit("nome: 2 a 32 letras, numeros, _ . -")
     if args[0] == "admin":
+        nivel = args[2] if len(args) > 2 else "admin"
+        if nivel not in NIVEIS:
+            raise SystemExit("nível: suporte, gm ou admin")
         senha = secrets.token_urlsafe(12)
-        db_exec("INSERT INTO pwadmin_admins (nome, senha) VALUES (%s, %s) "
-                "ON DUPLICATE KEY UPDATE senha=VALUES(senha), ativo=1", (nome, hash_senha(senha)))
-        audit("admin_senha", admin="console", alvo=nome)
-        print(f"Admin {nome} · senha: {senha}")
+        db_exec("INSERT INTO pwadmin_admins (nome, senha, nivel) VALUES (%s, %s, %s) "
+                "ON DUPLICATE KEY UPDATE senha=VALUES(senha), nivel=VALUES(nivel), ativo=1",
+                (nome, hash_senha(senha), nivel))
+        audit("admin_senha", admin="console", alvo=nome, nivel=nivel)
+        print(f"Admin {nome} ({nivel}) · senha: {senha}")
     elif args[0] == "desativar":
         db_exec("UPDATE pwadmin_admins SET ativo=0 WHERE nome=%s", (nome,))
         audit("admin_desativado", admin="console", alvo=nome)
@@ -1208,6 +1620,7 @@ def main():
         return comando_admin(sys.argv[1:])
     preparar_banco()
     threading.Thread(target=_manter_indice, daemon=True).start()
+    threading.Thread(target=_manter_varredura, daemon=True).start()
     srv = http.server.ThreadingHTTPServer((CFG["bind"], CFG["port"]), Handler)
     print(f"PW Admin em http://{CFG['bind']}:{CFG['port']}", flush=True)
     srv.serve_forever()
