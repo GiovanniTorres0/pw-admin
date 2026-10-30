@@ -6,9 +6,9 @@ Painel web para administrar um servidor de **Perfect World 1.5.5 (v156)**: conta
 
 ## O que faz
 
-- **Contas e personagens:** busca, status online e GM.
+- **Busca:** por nome, conta ou ID, feita no servidor (escala para milhares de contas), com lista de online e recentes. Atualização automática do personagem aberto.
 - **Personagem:** nível, XP, SP, HP, MP, gold, atributos (com recálculo de HP, MP, dano e defesa base pelo nível e regra de pontos do login) e botão "mandar para a cidade".
-- **Inventário:** equipado, bolsa e banco em grade de ícones, com a dica (tooltip) do jogo. Colocar e tirar itens.
+- **Inventário:** equipado por espaço, bolsa e banco em grade de 8 como no jogo, com a dica (tooltip) do jogo. Colocar (bolsa ou banco) e tirar itens, gold e expansão de espaços.
 - **Correio:** gold e itens. Equipamentos, voos, moda, poções e ovos de pet vão com o corpo binário que o servidor espera.
 - **Moderação:** kick, mute, ban, backups e restauração.
 - **Servidor:** aviso global e cash para a conta.

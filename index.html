@@ -60,12 +60,18 @@
   .cap { display:flex; align-items:center; gap:4px; font-size:12px; color:var(--muted); margin:0; }
   #detail label.cap { display:flex; flex-direction:row; align-items:center; gap:4px; margin:0; }
   #detail .cap input { width:58px; padding:3px 6px; }
+  #detail .cap input.ouro { width:120px; color:var(--warn); }
   .gold { font-size:12px; color:var(--warn); white-space:nowrap; }
   .eq { display:grid; grid-template-columns:repeat(auto-fill,52px); gap:6px 4px; }
   .eqc { display:flex; flex-direction:column; align-items:center; gap:2px; }
   .eqc span { font-size:10px; color:var(--muted); white-space:nowrap; }
   .eqsub { font-size:11px; margin:10px 0 6px; }
   /* Lateral: busca + contas recolhiveis */
+  .lsec + .lsec { margin-top:14px; }
+  .lt { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin-bottom:2px; }
+  .role .rn { display:flex; flex-direction:column; min-width:0; position:relative; }
+  .role .rn small { font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dot { position:absolute; left:-7px; top:6px; width:5px; height:5px; border-radius:50%; background:var(--ok, #3fb950); }
   details.acc summary { list-style:none; cursor:pointer; display:flex; gap:6px; align-items:center; padding:2px 0; }
   details.acc summary::-webkit-details-marker { display:none; }
   details.acc summary::before { content:"›"; color:var(--muted); width:10px; transition:transform .12s; }
@@ -174,8 +180,7 @@
     <button class="btn sec" id="openSrv" style="margin-left:auto">Aviso global</button></header>
   <main>
     <div>
-      <section class="card"><div class="sbar"><input id="accSearch" placeholder="Buscar personagem, conta ou #ID" autocomplete="off">
-        <button class="ibtn" id="reload" title="Atualizar lista e personagem">↻</button></div>
+      <section class="card"><div class="sbar"><input id="accSearch" type="search" placeholder="Buscar personagem, conta ou #ID  ( / )" autocomplete="off"></div>
         <div id="accounts" class="muted">Carregando…</div></section>
     </div>
     <section id="detail"><div class="card muted">Escolha um personagem.</div></section>
@@ -277,7 +282,6 @@ $("loginForm").onsubmit = async (e) => {
   try { await api("/api/login", { password: $("pw").value }); show("app"); await loadIcones(); loadAccounts(); }
   catch (err) { const m = $("loginMsg"); m.textContent = err.message; m.className = "msg bad"; }
 };
-$("reload").onclick = () => { loadAccounts(); if (selected) loadRole(selected); };
 $("openSrv").onclick = () => { $("srv").showModal(); $("bcText").focus(); };
 $("srvClose").onclick = () => $("srv").close();
 $("cashClose").onclick = () => $("cashDlg").close();
@@ -308,60 +312,86 @@ $("cashForm").onsubmit = async (e) => {
   } catch (err) { msg(null, err.message, false); }
 };
 
-async function loadAccounts() {
-  const accs = await api("/api/accounts");
-  show("app");
-  ACCS = accs;
-  renderAccounts();
-}
-let ACCS = [];
+// Lateral: nunca lista todas as contas (nao escala com milhares). Vazio = online agora + recentes;
+// digitando = busca no servidor (nome, conta ou ID), com no maximo 30 resultados.
+let ONLINE = [], RECENTES = [], buscaSeq = 0, buscaTimer;
+try { RECENTES = JSON.parse(localStorage.getItem("pwRecentes") || "[]"); } catch { RECENTES = []; }
 const marca = (txt, q) => {
   const t = esc(txt);
   if (!q) return t;
   const i = txt.toLowerCase().indexOf(q);
   return i < 0 ? t : esc(txt.slice(0, i)) + `<mark>${esc(txt.slice(i, i + q.length))}</mark>` + esc(txt.slice(i + q.length));
 };
-const roleBtn = (r, a, q) => `<button class="role ${r.id === selected ? "sel" : ""}" data-id="${r.id}">
-  <span>${marca(r.name, q)}${a ? ` <span class="muted">· ${marca(a.name, q)}</span>` : ""}</span><span class="muted">#${r.id}</span></button>`;
-function renderAccounts() {
-  const bruto = $("accSearch").value.trim().toLowerCase(), q = bruto.replace(/^#/, "");
+const roleBtn = (r, q) => `<button class="role ${r.id === selected ? "sel" : ""}" data-id="${r.id}">
+  <span class="rn">${r.online ? '<i class="dot" title="conta online"></i>' : ""}<span>${marca(r.name, q)}</span>
+    <small>${marca(r.account || "#" + r.userid, q)}${r.gm ? " · GM" : ""}</small></span><span class="muted">#${r.id}</span></button>`;
+const secao = (titulo, itens, q, vazio) => !itens.length && !vazio ? "" :
+  `<div class="lsec"><div class="lt">${titulo}</div>${itens.length ? itens.map((r) => roleBtn(r, q)).join("") : `<p class="muted">${vazio}</p>`}</div>`;
+function mostrarLista(html) {
   const box = $("accounts");
-  if (q) {
-    // Busca: lista direta de personagens (nome, conta ou ID de personagem/conta)
-    const achados = [];
-    for (const a of ACCS) {
-      const contaBate = a.name.toLowerCase().includes(q) || String(a.id) === q;
-      for (const r of a.roles) if (contaBate || r.name.toLowerCase().includes(q) || String(r.id) === q) achados.push([r, a]);
-    }
-    box.innerHTML = achados.length
-      ? `<div class="muted" style="font-size:12px;margin-bottom:4px">${achados.length} personagem${achados.length > 1 ? "s" : ""} · Enter abre o primeiro</div>`
-        + achados.map(([r, a]) => roleBtn(r, a, q)).join("")
-      : '<p class="muted">Nenhum personagem encontrado.</p>';
-  } else {
-    box.innerHTML = ACCS.map((a) => {
-      const aberta = a.roles.some((r) => r.id === selected) || ACCS.length <= 5;
-      return `<details class="acc" ${aberta ? "open" : ""}>
-        <summary><strong>${esc(a.name)}</strong> <span class="muted">#${a.id}</span>
-          ${a.online ? '<span class="tag on">online</span>' : ""} ${a.gm ? '<span class="tag gm">GM</span>' : ""}</summary>
-        ${a.roles.length ? a.roles.map((r) => roleBtn(r, null, "")).join("") : '<div class="muted" style="margin:4px 0 0 16px">sem personagens</div>'}
-      </details>`;
-    }).join("");
-  }
+  box.innerHTML = html;
   box.querySelectorAll(".role").forEach((b) => b.onclick = () => loadRole(Number(b.dataset.id)));
 }
+function renderLateral() {
+  if ($("accSearch").value.trim()) return;
+  const on = new Set(ONLINE.map((r) => r.userid));
+  mostrarLista(secao(`Online agora · ${ONLINE.length}`, ONLINE, "", "Ninguém online.")
+    + secao("Recentes", RECENTES.map((r) => ({ ...r, online: on.has(r.userid) })), "", ""));
+}
+async function loadAccounts() {
+  ONLINE = await api("/api/online");
+  show("app");
+  renderLateral();
+}
+function lembrar(r) {
+  RECENTES = [{ id: r.id, name: r.name, userid: r.userid, account: r.account }, ...RECENTES.filter((x) => x.id !== r.id)].slice(0, 8);
+  try { localStorage.setItem("pwRecentes", JSON.stringify(RECENTES)); } catch { /* sem armazenamento */ }
+  renderLateral();
+}
+$("accSearch").oninput = () => {
+  clearTimeout(buscaTimer);
+  const q = $("accSearch").value.trim();
+  if (!q) { buscaSeq++; return renderLateral(); }
+  buscaTimer = setTimeout(async () => {
+    const seq = ++buscaSeq;
+    let res = null;
+    try { res = await api(`/api/busca?q=${encodeURIComponent(q)}`); } catch { /* mostra erro abaixo */ }
+    if (seq !== buscaSeq) return;
+    const ql = q.replace(/^#/, "").trim().toLowerCase();
+    mostrarLista(res === null ? '<p class="muted">Erro na busca.</p>'
+      : secao(res.length >= 30 ? "30+ resultados · refine a busca" : `${res.length} resultado${res.length === 1 ? "" : "s"}`, res, ql, "Nenhum personagem encontrado."));
+  }, 250);
+};
 $("accSearch").onkeydown = (e) => {
   if (e.key === "Enter") { const b = $("accounts").querySelector(".role"); if (b) b.click(); }
-  if (e.key === "Escape") { e.target.value = ""; renderAccounts(); }
+  if (e.key === "Escape") { e.target.value = ""; $("accSearch").oninput(); }
 };
 document.addEventListener("keydown", (e) => {
   if (e.key === "/" && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); $("accSearch").focus(); }
 });
-$("accSearch").oninput = renderAccounts;
+
+// Atualizacao automatica: online a cada 30 s; o personagem aberto confere a impressao digital
+// a cada 10 s e so recarrega se mudou, nunca com edicao pendente, caixa aberta ou campo em foco.
+let VERSAO = null;
+const ocupado = () => document.querySelector("dialog[open], #selBar:not([hidden])") || !$("aiBox")?.hidden
+  || [...$("detail").querySelectorAll("input, textarea")].some((i) => i.value !== i.defaultValue)
+  || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) && $("detail").contains(document.activeElement);
+setInterval(async () => {
+  if (document.hidden) return;
+  try { ONLINE = await api("/api/online"); renderLateral(); } catch { /* tenta de novo */ }
+}, 30000);
+setInterval(async () => {
+  if (document.hidden || !selected || ocupado()) return;
+  const id = selected;
+  try {
+    const v = await api(`/api/role/${id}/versao`);
+    if (id === selected && VERSAO && (v.v !== VERSAO.v || v.online !== VERSAO.online) && !ocupado()) loadRole(id, true);
+  } catch { /* tenta de novo */ }
+}, 10000);
 
 const FIELDS = [
   ["status.level", "Nível"], ["status.exp", "XP"], ["status.sp", "SP (espírito)"],
   ["status.hp", "HP"], ["status.mp", "MP"], ["status.reputation", "Reputação"],
-  ["pocket.money", "Gold na bolsa"], ["storehouse.money", "Gold no banco"],
 ];
 // Atributos base (status.property). Os pontos livres acompanham: tirar de um atributo devolve
 // o ponto, e cada nivel a mais da 5 pontos, como no jogo.
@@ -404,23 +434,32 @@ function extraInv(r) {
   return blocos.join("");
 }
 
-async function loadRole(id) {
+// silencioso: atualizacao automatica, sem "Carregando" e mantendo a rolagem das colunas
+async function loadRole(id, silencioso = false) {
   selected = id;
   document.querySelectorAll(".role").forEach((b) => b.classList.toggle("sel", Number(b.dataset.id) === id));
   const d = $("detail");
-  d.innerHTML = '<div class="card muted">Carregando…</div>';
+  const rolagem = silencioso ? [...d.querySelectorAll(".dcol")].map((c) => c.scrollTop) : null;
+  if (!silencioso) { d.innerHTML = '<div class="card muted">Carregando…</div>'; VERSAO = null; }
   let r;
+  try { r = await api(`/api/role/${id}`); } catch (e) {
+    if (!silencioso) d.innerHTML = `<div class="card"><div class="msg bad">${esc(e.message)}</div></div>`;
+    return;
+  }
+  if (id !== selected) return;
   TIPS = []; tip.hidden = true;
-  try { r = await api(`/api/role/${id}`); } catch (e) { d.innerHTML = `<div class="card"><div class="msg bad">${esc(e.message)}</div></div>`; return; }
+  VERSAO = { v: r.versao, online: r.online };
+  if (!silencioso) lembrar(r);
   const val = (k) => { const [s, f] = k.split("."); return s === "attr" ? r.atributos[f] : r[s][f]; };
   const input = ([k, label]) => `<label>${label}<input data-k="${k}" data-v="${val(k)}" value="${val(k)}"></label>`;
   d.innerHTML = `
     <div class="rhead">
       <div class="rtop">
         <h2>${esc(r.name)}</h2>
-        <span class="tag">Nv ${r.status.level}</span><span class="muted">${r.cls_name} · conta #${r.userid}</span>
+        <span class="tag">Nv ${r.status.level}</span><span class="muted">${r.cls_name} · conta ${esc(r.account || "#" + r.userid)}</span>
         ${r.online ? '<span class="tag on">online · só leitura</span>' : ""}
         <div class="acts"><span id="pend" class="muted"></span>
+          <button class="ibtn" id="roleReload" title="Recarregar (atualiza sozinho a cada 10 s)">↻</button>
           <button class="btn sec" id="cashBtn" title="Dar cash para a conta ${esc(r.account || "#" + r.userid)}">Cash</button>
           <button class="btn" id="save" ${r.online ? "disabled" : ""} title="Faz backup antes de gravar">Salvar</button></div>
       </div>
@@ -459,7 +498,7 @@ async function loadRole(id) {
      <div class="dcol">
       <section class="card">
       <h3>Equipado</h3>${equipGrid(r.equipment)}
-      <div class="invh"><h3>Bolsa · ${r.pocket.items.length}/${r.pocket.capacity}</h3><span class="gold">${fmt(r.pocket.money)} gold</span><label class="cap" title="Expansão: 32 a 64, de 8 em 8">Espaços <input data-k="pocket.capacity" data-v="${r.pocket.capacity}" value="${r.pocket.capacity}" type="number" min="32" max="64" step="8"></label>
+      <div class="invh"><h3>Bolsa · ${r.pocket.items.length}/${r.pocket.capacity}</h3><label class="cap gold">Gold <input class="ouro" data-k="pocket.money" data-v="${r.pocket.money}" value="${r.pocket.money}" type="number" min="0" max="2000000000"></label><label class="cap" title="Expansão: 32 a 64, de 8 em 8">Espaços <input data-k="pocket.capacity" data-v="${r.pocket.capacity}" value="${r.pocket.capacity}" type="number" min="32" max="64" step="8"></label>
         <button class="btn sec" id="aiToggle" ${r.online ? "disabled" : ""}>+ Adicionar</button></div>
       <div class="addbox" id="aiBox" hidden>
         <div class="grid">
@@ -467,12 +506,13 @@ async function loadRole(id) {
           <label>&nbsp;<button class="btn sec" type="button" id="aiPick">Catálogo…</button></label>
           <label>Quantidade<input id="aiCount" type="number" min="1" value="1"></label>
           <label id="aiSockL" style="display:none">Engastes<input id="aiSock" type="number" min="0" value="0"></label>
+          <label>Onde<select id="aiLocal"><option value="pocket">Bolsa</option><option value="storehouse">Banco</option></select></label>
         </div>
         <div id="aiItemInfo" class="muted" style="margin-top:8px"></div>
-        <div class="row"><button class="btn" id="aiAdd">Colocar na bolsa</button></div>
+        <div class="row"><button class="btn" id="aiAdd">Colocar</button></div>
       </div>
       <div style="margin-top:10px">${invGrid(r.pocket.items, "pocket", r.pocket.capacity)}</div>
-      <div class="invh"><h3>Banco · ${r.storehouse.items.length}/${r.storehouse.capacity}</h3><span class="gold">${fmt(r.storehouse.money)} gold</span><label class="cap" title="Expansão: 16 a 120, de 8 em 8">Espaços <input data-k="storehouse.capacity" data-v="${r.storehouse.capacity}" value="${r.storehouse.capacity}" type="number" min="16" max="120" step="8"></label></div>
+      <div class="invh"><h3>Banco · ${r.storehouse.items.length}/${r.storehouse.capacity}</h3><label class="cap gold">Gold <input class="ouro" data-k="storehouse.money" data-v="${r.storehouse.money}" value="${r.storehouse.money}" type="number" min="0" max="2000000000"></label><label class="cap" title="Expansão: 16 a 120, de 8 em 8">Espaços <input data-k="storehouse.capacity" data-v="${r.storehouse.capacity}" value="${r.storehouse.capacity}" type="number" min="16" max="120" step="8"></label></div>
       <div style="margin-top:10px">${invGrid(r.storehouse.items, "storehouse", r.storehouse.capacity)}</div>
       ${extraInv(r)}
       <div class="selbar" id="selBar" hidden></div>
@@ -571,6 +611,10 @@ async function loadRole(id) {
   };
   const LOCAL = { equipment: "Equipado", pocket: "Bolsa", storehouse: "Banco", dress: "Banco de moda",
                   material: "Banco de materiais", generalcard: "Cartas", task: "Itens de missão" };
+  if (rolagem) d.querySelectorAll(".dcol").forEach((c, i) => c.scrollTop = rolagem[i] || 0);
+  $("roleReload").onclick = () => {
+    if (!d.querySelector("input.changed") || confirm("Descartar as alterações não salvas?")) loadRole(id);
+  };
   $("cashBtn").onclick = () => abrirCash(r.userid, r.account || `#${r.userid}`);
   d.querySelectorAll(".slot:not(.vazio)").forEach((s) => s.onclick = () => {
     d.querySelectorAll(".slot.sel").forEach((x) => x.classList.remove("sel"));
@@ -639,12 +683,12 @@ async function loadRole(id) {
   });
   $("aiAdd").onclick = async () => {
     const body = { item_id: Number($("aiItem").value || 0), count: Number($("aiCount").value || 1),
-                   engastes: Number($("aiSock").value || 0) };
+                   engastes: Number($("aiSock").value || 0), local: $("aiLocal").value };
     if (!body.item_id) return msg($("aiMsg"), "Escolha um item.", false);
     try {
       const res = await api(`/api/role/${id}/additem`, body);
       await loadRole(id);
-      msg($("aiMsg"), `${res.nome} colocado no espaço ${res.pos} da bolsa. Backup: ${res.backup}`, true);
+      msg($("aiMsg"), `${res.nome} colocado no espaço ${res.pos + 1} ${body.local === "storehouse" ? "do banco" : "da bolsa"}.`, true);
     } catch (e) { msg($("aiMsg"), e.message, false); }
   };
   $("mSend").onclick = async () => {

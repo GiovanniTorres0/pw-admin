@@ -237,16 +237,106 @@ def online_userids():
 
 # ---------------------------------------------------------------- dados
 
-def list_accounts():
-    online = online_userids()
-    gms = {r["userid"] for r in db_query("SELECT DISTINCT userid FROM auth")}
+def gm_userids():
+    return {r["userid"] for r in db_query("SELECT DISTINCT userid FROM auth")}
+
+
+# Indice de personagens em memoria (conta -> personagens), montado em segundo plano. Com milhares
+# de contas, listar tudo a cada pedido nao escala: a busca usa o indice e o SQL; contas achadas
+# pelo nome ou ID sao relidas na hora, entao personagens novos aparecem sem esperar o indice.
+INDICE_INTERVALO = 300  # segundos
+BUSCA_MAX = 30
+_indice = {}  # userid -> {"name": conta, "roles": [(roleid, nome)]}
+_indice_lock = threading.Lock()
+
+
+def _reler_conta(userid, nome):
+    roles = p.get_user_roles(GAMEDB, userid)
+    with _indice_lock:
+        _indice[userid] = {"name": nome, "roles": roles}
+    return roles
+
+
+def _manter_indice():
+    while True:
+        try:
+            novo = {u["id"]: {"name": u["name"], "roles": p.get_user_roles(GAMEDB, u["id"])}
+                    for u in db_query("SELECT id, name FROM users")}
+            with _indice_lock:
+                _indice.clear()
+                _indice.update(novo)
+        except Exception as e:  # noqa: BLE001 - tenta de novo no proximo ciclo
+            print("indice:", e, file=sys.stderr, flush=True)
+        time.sleep(INDICE_INTERVALO)
+
+
+def nome_conta(userid):
+    with _indice_lock:
+        if userid in _indice:
+            return _indice[userid]["name"]
+    rows = db_query("SELECT name FROM users WHERE id=%s", (userid,))
+    return rows[0]["name"] if rows else ""
+
+
+def buscar(q):
+    """Personagens por nome, por conta ou por ID (de personagem ou de conta). No maximo BUSCA_MAX."""
+    q = q.strip().lstrip("#").strip()
+    if not q:
+        return []
+    online, gms = online_userids(), gm_userids()
+    grupos = [[] for _ in range(5)]  # ID exato, nome exato, nome comeca, nome contem, conta
+
+    if q.isdigit():
+        n = int(q)
+        try:
+            role, _ = p.get_role(GAMEDB, n)
+            grupos[0].append((n, p.role_name(role), role["base"]["userid"]))
+        except Exception:  # noqa: BLE001 - nao e ID de personagem
+            pass
+        for u in db_query("SELECT id, name FROM users WHERE id=%s", (n,)):
+            grupos[0] += [(rid, nome, u["id"]) for rid, nome in _reler_conta(u["id"], u["name"])]
+
+    like = "%" + q.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_") + "%"
+    for u in db_query("SELECT id, name FROM users WHERE name LIKE %s ORDER BY LENGTH(name), name LIMIT 10", (like,)):
+        grupos[4] += [(rid, nome, u["id"]) for rid, nome in _reler_conta(u["id"], u["name"])]
+
+    ql = q.lower()
+    with _indice_lock:
+        todos = [(rid, nome, uid) for uid, c in _indice.items() for rid, nome in c["roles"]]
+    for rid, nome, uid in todos:
+        nl = nome.lower()
+        if nl == ql:
+            grupos[1].append((rid, nome, uid))
+        elif nl.startswith(ql):
+            grupos[2].append((rid, nome, uid))
+        elif ql in nl:
+            grupos[3].append((rid, nome, uid))
+    for g in grupos[2:4]:
+        g.sort(key=lambda x: (len(x[1]), x[1].lower()))
+
+    out, vistos = [], set()
+    for rid, nome, uid in (x for g in grupos for x in g):
+        if rid in vistos:
+            continue
+        vistos.add(rid)
+        out.append({"id": rid, "name": nome, "userid": uid, "account": nome_conta(uid),
+                    "online": uid in online, "gm": uid in gms})
+        if len(out) >= BUSCA_MAX:
+            break
+    return out
+
+
+def lista_online():
+    """Contas online agora e os personagens delas (o authd nao diz qual personagem esta em jogo)."""
+    online, gms = online_userids(), gm_userids()
     out = []
-    for u in db_query("SELECT id, name, creatime FROM users ORDER BY id"):
-        roles = []
-        for roleid, name in p.get_user_roles(GAMEDB, u["id"]):
-            roles.append({"id": roleid, "name": name})
-        out.append({"id": u["id"], "name": u["name"], "created": str(u["creatime"]),
-                    "gm": u["id"] in gms, "online": u["id"] in online, "roles": roles})
+    for uid in sorted(online):
+        with _indice_lock:
+            c = _indice.get(uid)
+        roles = c["roles"] if c else _reler_conta(uid, nome_conta(uid))
+        conta = c["name"] if c else nome_conta(uid)
+        out += [{"id": rid, "name": nome, "userid": uid, "account": conta, "online": True, "gm": uid in gms}
+                for rid, nome in roles]
     return out
 
 
@@ -378,8 +468,11 @@ def edit_role(roleid, changes):
 
 
 def add_item(roleid, body):
-    """Poe um item no primeiro espaco livre da bolsa de um personagem offline (backup antes,
-    confere depois). O corpo do item vem de equipamentos.montar."""
+    """Poe um item no primeiro espaco livre da bolsa ou do banco de um personagem offline (backup
+    antes, confere depois). O corpo do item vem de equipamentos.montar."""
+    destino = body.get("local", "pocket")
+    if destino not in EXPANSAO:
+        raise ValueError("destino invalido: use bolsa ou banco")
     tid = int(body.get("item_id") or 0)
     count = int(body.get("count") or 1)
     engastes = int(body.get("engastes") or 0)
@@ -396,11 +489,11 @@ def add_item(roleid, body):
             raise ValueError("este personagem nao passa no teste de ida e volta; escrita bloqueada")
         if role["base"]["userid"] in online_userids():
             raise ValueError("personagem online: desconecte o jogador antes de editar")
-        bolsa = role["pocket"]
+        bolsa = role[destino]
         ocupados = {it["pos"] for it in bolsa["items"]}
         livre = next((i for i in range(bolsa["capacity"]) if i not in ocupados), None)
         if livre is None:
-            raise ValueError("a bolsa esta cheia")
+            raise ValueError(f"{EXPANSAO[destino]}: sem espaço livre")
         bolsa["items"].append(novo | {"pos": livre})
         bolsa["items"].sort(key=lambda it: it["pos"])
 
@@ -412,10 +505,10 @@ def add_item(roleid, body):
             raise ValueError(f"PutRoleData retcode={retcode}")
         check, _ = p.get_role(GAMEDB, roleid)
         if not any(it["pos"] == livre and it["id"] == tid and it["data"] == novo["data"]
-                   for it in check["pocket"]["items"]):
-            raise ValueError(f"gravado, mas o item nao apareceu na bolsa; backup em {backup}")
+                   for it in check[destino]["items"]):
+            raise ValueError(f"gravado, mas o item nao apareceu ({EXPANSAO[destino]}); backup em {backup}")
         audit("add_item", roleid=roleid, name=p.role_name(role), item_id=tid, count=count,
-              engastes=engastes, pos=livre, backup=backup)
+              engastes=engastes, local=destino, pos=livre, backup=backup)
         return {"ok": True, "pos": livre, "nome": item["nome"], "backup": os.path.basename(backup)}
 
 
@@ -637,8 +730,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not self._session():
             return self._send(401, {"error": "login necessario"})
         try:
-            if path == "/api/accounts":
-                return self._send(200, list_accounts())
+            if path == "/api/busca":
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("q", [""])[0]
+                return self._send(200, buscar(q[:40]))
+            if path == "/api/online":
+                return self._send(200, lista_online())
             if path == "/api/categorias":
                 return self._send(200, list_categories())
             if path == "/api/itens":
@@ -662,9 +758,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self._send(404, {"error": "item nao existe"})
                 return self._send(200, {"id": tid, "pilha": item.get("pilha", 0)} | item_info(tid)
                                   | {"criar": equipamentos.suporte(tid, item)})
+            if len(parts) == 4 and parts[:2] == ["api", "role"] and parts[3] == "versao":
+                # Impressao digital leve para a atualizacao automatica da interface
+                role, raw = p.get_role(GAMEDB, int(parts[2]))
+                uid = role["base"]["userid"]
+                return self._send(200, {"v": hashlib.sha1(raw).hexdigest()[:16],
+                                        "online": uid in online_userids()})
             if len(parts) == 3 and parts[:2] == ["api", "role"]:
-                role, _ = p.get_role(GAMEDB, int(parts[2]))
-                return self._send(200, role_json(role) | {"backups": list_backups(int(parts[2]))})
+                role, raw = p.get_role(GAMEDB, int(parts[2]))
+                return self._send(200, role_json(role) | {"backups": list_backups(int(parts[2])),
+                                                          "versao": hashlib.sha1(raw).hexdigest()[:16],
+                                                          "account": nome_conta(role["base"]["userid"])})
             return self._send(404, {"error": "nao encontrado"})
         except Exception as e:  # noqa: BLE001 - devolve o erro para a interface
             return self._send(500, {"error": str(e)})
@@ -712,6 +816,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 def main():
+    threading.Thread(target=_manter_indice, daemon=True).start()
     srv = http.server.ThreadingHTTPServer((CFG["bind"], CFG["port"]), Handler)
     print(f"PW Admin em http://{CFG['bind']}:{CFG['port']}", flush=True)
     srv.serve_forever()
